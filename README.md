@@ -35,8 +35,10 @@ node scripts/e2e-resume.mjs   http://localhost:5173/ <video.mp4> [chrome-path]
 `vite.config.ts` の `base: './'` により、GitHub Pages / Cloudflare Pages などのサブパス配信でも動作します。
 `.github/workflows/pages.yml` は GitHub Pages への配置例です(リポジトリ設定で Pages のソースを "GitHub Actions" にしてください)。
 
-## ライセンスに関する注意
+## ライセンス
 
-- 本体: MIT(予定)
-- 同梱する `@ffmpeg/core`(ffmpeg.wasm)は GPL-2.0 ビルドです。配布形態とライセンス表記はオーナー判断事項(`CLAUDE.md` 参照)
+本ツールは **GPL-3.0-or-later** で公開します(`LICENSE`)。同梱する `@ffmpeg/core`(ffmpeg.wasm、GPL-2.0-or-later)に合わせた判断です(2026-08-26 オーナー決定)。
+
+- ffmpeg.wasm(`@ffmpeg/ffmpeg`, `@ffmpeg/core`): MIT / GPL-2.0-or-later — https://github.com/ffmpegwasm/ffmpeg.wasm
 - tesseract.js / tesseract.js-core: Apache-2.0、言語データ(tessdata): Apache-2.0
+- mp4box.js: BSD-3-Clause、JSZip: MIT/GPL dual、React: MIT

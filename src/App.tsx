@@ -469,10 +469,7 @@ export default function App() {
       <footer className="app-footer">
         <p>処理はすべてこの端末の中で行われ、動画・画像・文字情報が外部に送られることはありません。保存した画像の取り扱いはご自身の責任でお願いします。</p>
         <p>
-          {/* 要件 §11: メモリーアプリのウェイトリストへの導線(強制ではない)。URL はオーナーから受領後に設定 */}
-          <a href="#" onClick={(e) => e.preventDefault()}>
-            保存したメールを閲覧できるアプリを開発中です(準備中)
-          </a>
+          このツールはオープンソース(GPL-3.0)で公開しています。動画の読み込みに ffmpeg.wasm(GPL)、文字の読み取りに tesseract.js(Apache-2.0)を使用しています。
         </p>
       </footer>
     </main>

@@ -13,3 +13,8 @@ tsconfig.*.tsbuildinfo
 # 参照動画・基準 zip は大きいので git に含めない(README 参照)
 reference/*.mp4
 reference/*.zip
+# メール本文・写真が写るサンプル画像と検証ログは公開リポジトリに含めない
+docs/samples-*/
+docs/verification-*.log
+docs/verification-*.json
+reference/stitched.png

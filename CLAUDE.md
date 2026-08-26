@@ -45,7 +45,7 @@ npm run build      # 静的ビルド(dist/)
 2. **S-2**: セグメンテーション+代表フレーム選定+重複排除。PNG 出力まで。**完了(2026-08-26)**。pHash は `src/core/resample.ts`(Pillow 互換リサンプル)+`src/core/phash.ts` で imagehash.phash とビット一致(331 フレームで検証)。選定は `src/core/select.ts`(ストリーミング、保持画像 ≤ 候補 2 枚+保留 image)。ファイル名は暫定 `mail_NN_segS_tT.png`(OCR 名は S-4)
 3. **S-3**: 位相相関スティッチのポート+合成回帰テスト整備。**完了(2026-08-26)**。`fft.ts`(Stockham 混合基数)+`phaseCorrelate.ts`(cv2 移植。窓は √(wr·wc) — OpenCV は createHanningWindow の末尾で sqrt を掛ける)+`stitch.ts`(stitch.py+固定ヘッダー自動推定)+`stitchCanvas.ts`(タイル管理)。合成回帰: cv2 と 35 対一致・高さ 4736 一致・0.055 版 8/8。実録画では区間ごとに detail フレームをスティッチし、採用があれば代表フレームの代わりに出力
 4. **S-4**: OCR メタデータ+プレビュー UI+ZIP 出力。**完了(2026-08-26)**。`src/core/ocr.ts`(tesseract.js、worker/core/tessdata は `scripts/copy-tesseract-assets.sh` で public/ にセルフホスト。jpn は標準 tessdata — fast 版では「渋」が読めない)。区間ごとに detail フレームを順に試し、日時が取れたら停止(上限 8 回)。31 秒版の出力名は基準 zip と完全一致。UI: 除外チェック・日時手入力・JSZip で ZIP(PNG+metadata.json)
-5. **S-5**: IndexedDB 中断復帰、性能チューニング、録画ガイドページ。**完了(2026-08-26)**。性能: 半スペクトル(Hermitian)+実数ペア詰め FFT で 0.96→0.36 秒/フレーム(Node)、ブラウザ 0.47 秒(数値不変、cv2 パリティ維持)。画素完全一致フレームは FFT 省略。中断復帰: `src/core/store.ts`(IndexedDB: jobs/outputs、出力 PNG を届くたびに保存、起動時に running→interrupted)。本番 UI: `src/App.tsx` + `src/ui/`(録画ガイド §5、複数動画の順次処理、進捗/残り時間、履歴から復元・削除、除外・日時手入力、ZIP)。相関は 1/2 縮小+曖昧域 [0.55,0.85) は原寸再判定(Python で先に検証: 合成 8/8・実録画 38 対中 37 対一致、stitch.py にも同規則を反映)→ ブラウザ 0.23 秒/フレーム。未実施: Worker 並列・ウェイトリスト URL(§11、オーナーから受領後)
+5. **S-5**: IndexedDB 中断復帰、性能チューニング、録画ガイドページ。**完了(2026-08-26)**。性能: 半スペクトル(Hermitian)+実数ペア詰め FFT で 0.96→0.36 秒/フレーム(Node)、ブラウザ 0.47 秒(数値不変、cv2 パリティ維持)。画素完全一致フレームは FFT 省略。中断復帰: `src/core/store.ts`(IndexedDB: jobs/outputs、出力 PNG を届くたびに保存、起動時に running→interrupted)。本番 UI: `src/App.tsx` + `src/ui/`(録画ガイド §5、複数動画の順次処理、進捗/残り時間、履歴から復元・削除、除外・日時手入力、ZIP)。相関は 1/2 縮小+曖昧域 [0.55,0.85) は原寸再判定(Python で先に検証: 合成 8/8・実録画 38 対中 37 対一致、stitch.py にも同規則を反映)→ ブラウザ 0.23 秒/フレーム。未実施: Worker 並列。ウェイトリスト導線(§11)は当面設置しない(オーナー判断)
 
 各スライス完了時に実録画サンプルでの結果画像を目視確認し、要件 §9 の精度目標に照らす。
 
@@ -57,4 +57,4 @@ npm run build      # 静的ビルド(dist/)
 - iOS ラバーバンド(末端バウンス)の負方向変位 — 棄却条件で吸収できる想定だが実録画未確認
 - 実アプリの固定ヘッダー高さの機種差 — S-3 で自動推定を実装(採用対の行差分から上端の不変行数を推定、応答 ≥0.8 の対のみ、最小値追跡)。iPhone 15 Pro Max 実測: ステータスバー 153px+戻るボタン行 195px。未解決: 送信者ヘッダーが本文と別速度で縮む(collapsing header)ため先頭付近に二重描画が残る/ページ切替アニメーション(応答 0.5〜0.6)が「巨大な dy」として採用され末尾に白帯が入る — 2026-08-26 オーナー承認で resp<0.7 棄却+new_part のみ継ぎ足しに変更し解消
 - OCR: 差出人名は tesseract の jpn が文字間に空白を入れるため CJK 間の空白を詰めて保存(「渋井美奈」)。ヘッダーが映らない区間(スクロール途中から始まる/短い区間)は unknown → UI で手入力
-- HEVC 録画のブラウザ別デコード可否 — Windows Chrome(GPU に HEVC 復号なし)で不可を実確認。ffmpeg.wasm へ自動フォールバック済み(約 6〜7 倍の実時間、24 秒動画で 160 秒)。`@ffmpeg/core` は GPL-2.0 ビルドのため配布ライセンス(MIT 予定)との整合はオーナー判断事項
+- HEVC 録画のブラウザ別デコード可否 — Windows Chrome(GPU に HEVC 復号なし)で不可を実確認。ffmpeg.wasm へ自動フォールバック済み(約 6〜7 倍の実時間、24 秒動画で 160 秒)。ライセンスは GPL-3.0-or-later に決定(2026-08-26、ffmpeg.wasm コアが GPL のため)
