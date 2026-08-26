@@ -37,7 +37,7 @@ export default function App() {
   const [queue, setQueue] = useState<File[]>([])
   const [zipBusy, setZipBusy] = useState(false)
   const [showLog, setShowLog] = useState(false)
-  const [showGuide, setShowGuide] = useState(true)
+  const [showGuide, setShowGuide] = useState(false)
   const [startedAt, setStartedAt] = useState<number | null>(null)
   const [now, setNow] = useState<number>(Date.now())
   const keyRef = useRef(0)
