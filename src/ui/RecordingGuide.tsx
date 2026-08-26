@@ -36,7 +36,12 @@ export function RecordingGuide() {
       </p>
 
       <h3>Android の場合</h3>
-      <p>Android 標準の画面収録で同じ手順です(ストアアカウントで PC エミュレータに復元できる場合、より自動化しやすい方法もあります。別途ご案内予定)。</p>
+      <p>
+        Android 標準の画面収録で同じ手順です。パソコンと USB でつなげる場合は、録画とスクロールを自動でくり返すスクリプトを用意しています:{' '}
+        <a href="https://github.com/masaki6698/akbmail-rescue/tree/main/tools/android-autoscroll" target="_blank" rel="noreferrer">
+          Android 自動スクロール録画の手順
+        </a>
+      </p>
 
       <h3>全部は難しいときの優先順</h3>
       <p>スター済み → 記念日・イベント期 → 直近から遡る、の順をおすすめします。</p>

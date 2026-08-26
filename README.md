@@ -30,6 +30,10 @@ node scripts/e2e-headless.mjs http://localhost:5173/ <video.mp4> <log> [chrome-p
 node scripts/e2e-resume.mjs   http://localhost:5173/ <video.mp4> [chrome-path]
 ```
 
+## 録画の自動化(Android)
+
+`tools/android-autoscroll/` に、USB 接続した Android 端末で「画面録画+ゆっくりスクロール」を自動でくり返すスクリプト(PowerShell / bash)と手順書があります。iPhone は AssistiveTouch のカスタムジェスチャで代替します(ツール内ガイド参照)。
+
 ## 配布
 
 `vite.config.ts` の `base: './'` により、GitHub Pages / Cloudflare Pages などのサブパス配信でも動作します。
