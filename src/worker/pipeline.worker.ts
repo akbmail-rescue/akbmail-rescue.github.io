@@ -40,36 +40,43 @@ async function analyze(file: File, assetBase: string) {
     { workerPath: `${assetBase}tesseract/worker.min.js`, corePath: `${assetBase}tesseract-core/`, langPath: `${assetBase}tessdata/` },
     (m) => post({ type: 'stage', stage: m }),
   )
-  // OCR 待ち行列(R1 #4 / R2 #2, #3): 区間ごとに最大 8 候補、全体で最大 16 候補(≈32MB)、直列実行、drain は後着ジョブも待つ
-  const ocrQueue = new OcrQueue<{ ts: OffscreenCanvas; sd: OffscreenCanvas }>(
+  // OCR 待ち行列(R1 #4 / R2 #2, #3 / R3 #1, #2): 候補はグレー 8bit 配列(≈0.5MB)、区間 8・待ち 3・全体 64、直列、動的 drain
+  type OcrCrop = { width: number; height: number; gray: Uint8Array }
+  const toCanvas = (c: OcrCrop): OffscreenCanvas => {
+    const cv = new OffscreenCanvas(c.width, c.height)
+    const ctx = cv.getContext('2d')!
+    const img = ctx.createImageData(c.width, c.height)
+    for (let i = 0, j = 0; i < c.gray.length; i++, j += 4) {
+      img.data[j] = img.data[j + 1] = img.data[j + 2] = c.gray[i]
+      img.data[j + 3] = 255
+    }
+    ctx.putImageData(img, 0, 0)
+    return cv
+  }
+  const ocrQueue = new OcrQueue<{ ts: OcrCrop; sd: OcrCrop }>(
     async (img) => {
-      const t = await ocr.recognizeTimestamp(img.ts)
+      const t = await ocr.recognizeTimestamp(toCanvas(img.ts))
       let sender: { sender: string | null; raw: string } = { sender: null, raw: '' }
-      if (t.timestamp) sender = await ocr.recognizeSender(img.sd)
+      if (t.timestamp) sender = await ocr.recognizeSender(toCanvas(img.sd))
       return { timestamp: t.timestamp, sender: sender.sender, rawTimestamp: t.raw.trim(), rawSender: sender.raw.trim() }
     },
     (ev) => post({ type: 'ocr', seg: ev.seg, index: ev.index, attempt: ev.attempt, timestamp: ev.outcome.timestamp, sender: ev.outcome.sender, rawTimestamp: ev.outcome.rawTimestamp, rawSender: ev.outcome.rawSender }),
     (e) => post({ type: 'stage', stage: `OCR unavailable: ${(e as Error).message}(メタデータは unknown になります)` }),
-    (img) => {
-      // OffscreenCanvas は GC 任せだが、参照を切るためサイズを 0 にして即解放する
-      img.ts.width = 0
-      img.sd.width = 0
-    },
+    () => {},
     MAX_OCR_ATTEMPTS,
-    16,
+    64,
   )
   const scheduleOcr = (seg: number, index: number, src: CanvasGraySource) => {
     if (ocrQueue.isFailed) return
     const tr = rectPixels(src.width, src.height, OCR_REGIONS.timestamp)
     const sr = rectPixels(src.width, src.height, OCR_REGIONS.sender)
-    const img = {
-      ts: src.cropGrayUpscaled(tr.colStart, tr.colEnd, tr.rowStart, tr.rowEnd, OCR_UPSCALE),
-      sd: src.cropGrayUpscaled(sr.colStart, sr.colEnd, sr.rowStart, sr.rowEnd, OCR_UPSCALE),
-    }
-    if (!ocrQueue.offer(seg, { index, image: img })) {
-      img.ts.width = 0
-      img.sd.width = 0
-    }
+    ocrQueue.offer(seg, {
+      index,
+      image: {
+        ts: src.cropGrayUpscaledArray(tr.colStart, tr.colEnd, tr.rowStart, tr.rowEnd, OCR_UPSCALE),
+        sd: src.cropGrayUpscaledArray(sr.colStart, sr.colEnd, sr.rowStart, sr.rowEnd, OCR_UPSCALE),
+      },
+    })
   }
 
   // S-3: 区間ごとのスティッチ(detail フレームのみ投入)。区間が閉じたら結果を取り出して破棄する
@@ -178,7 +185,7 @@ async function analyze(file: File, assetBase: string) {
     await ocrQueue.drain()
     await ocr.terminate().catch(() => {})
     const st = ocrQueue.stats()
-    post({ type: 'stage', stage: `ocr summary: segments=${st.length} found=${st.filter((x) => x.found).length} attempts=${st.reduce((a, x) => a + x.attempts, 0)} dropped=${ocrQueue.droppedTotal}` })
+    post({ type: 'stage', stage: `ocr summary: segments=${st.length} found=${st.filter((x) => x.found).length} attempts=${st.reduce((a, x) => a + x.attempts, 0)} dropped=${ocrQueue.droppedTotal} errors=${ocrQueue.errorCount}` })
     if (ocrQueue.droppedTotal > 0) post({ type: 'skipped', what: 'mail', reason: `ocr_candidates_dropped_${ocrQueue.droppedTotal}`, seg: -1, index: -1, t: 0, hash: '' })
     post({ type: 'done', summary: summarize(segmenter), stats, elapsedMs: performance.now() - started, path, outputs: { ...counts, peakRetainedImages, stitchMsPerFrame: stitchFrames ? stitchMs / stitchFrames : 0 } })
   }

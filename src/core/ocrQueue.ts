@@ -2,7 +2,10 @@
  * OCR の待ち行列(Codex R1 #4 / R2 #2, #3)。
  * - 区間ごとに候補(切り出し画像)を順に試し、成功したらその区間は終了(rescue.py の「detail を順に試す」)
  * - 区間ごとの試行上限(maxAttemptsPerSeg)に加えて、動画全体で保持する候補数の上限(maxQueuedTotal)を持つ。
- *   1 候補 ≈ 2MB(1290×2796 の 2 倍拡大切り出し 2 枚)なので、上限 16 で約 32MB
+ *   候補はグレー 8bit の切り出し(1 候補 ≈ 0.5MB)なので、上限 64 で約 32MB
+ * - 失敗した区間が待ち行列を占有しないよう、待ち中の候補は区間ごと maxWaitingPerSeg(3)まで(R3 #1)。
+ *   失敗直後の連続フレームはほぼ同じ絵なので、前回候補から minSpacing フレーム以上離れたものだけ受け付ける
+ * - 認識の例外(タイムアウト等)は連続 maxConsecutiveErrors 回までは候補失敗として続行し、超えたら停止(R3 #2)
  * - 認識は全体で 1 本の直列実行(区間番号の小さい=先に閉じる区間を優先)。drain() は「実行中でなく、待ち候補も無い」状態まで待つ
  *   (後から追加されるジョブも取りこぼさない)
  */
@@ -30,8 +33,10 @@ interface SegState<T> {
   found: boolean
   running: boolean
   queue: OcrCandidate<T>[]
-  /** 全体上限で捨てた候補数(INV-7 の可視化用) */
+  /** 上限で捨てた候補数(INV-7 の可視化用) */
   dropped: number
+  /** 最後に受け付けた候補のフレーム番号(間隔制御) */
+  lastIndex: number
 }
 
 export class OcrQueue<T> {
@@ -40,7 +45,10 @@ export class OcrQueue<T> {
   private failed = false
   private running = false
   private waiters: Array<() => void> = []
+  private consecutiveErrors = 0
   droppedTotal = 0
+  /** 認識エラー(タイムアウト等)の総数 */
+  errorCount = 0
 
   constructor(
     private readonly recognize: (image: T) => Promise<OcrOutcome>,
@@ -48,7 +56,10 @@ export class OcrQueue<T> {
     private readonly onError: (e: unknown) => void,
     private readonly release: (image: T) => void = () => {},
     readonly maxAttemptsPerSeg = 8,
-    readonly maxQueuedTotal = 16,
+    readonly maxQueuedTotal = 64,
+    readonly maxWaitingPerSeg = 3,
+    readonly minSpacing = 3,
+    readonly maxConsecutiveErrors = 3,
   ) {}
 
   get isFailed(): boolean {
@@ -63,7 +74,7 @@ export class OcrQueue<T> {
   private seg(id: number): SegState<T> {
     let s = this.segs.get(id)
     if (!s) {
-      s = { attempts: 0, found: false, running: false, queue: [], dropped: 0 }
+      s = { attempts: 0, found: false, running: false, queue: [], dropped: 0, lastIndex: -Infinity }
       this.segs.set(id, s)
     }
     return s
@@ -74,6 +85,14 @@ export class OcrQueue<T> {
     if (this.failed) return false
     const st = this.seg(seg)
     if (st.found || st.attempts + st.queue.length >= this.maxAttemptsPerSeg) return false
+    // 直前の候補と近すぎるフレームは受け付けない(ほぼ同じ絵で無駄打ちになる)
+    if (cand.index - st.lastIndex < this.minSpacing) return false
+    // 待ち中の候補は区間ごとに上限(失敗中の区間が全体を占有しない)
+    if (st.queue.length >= this.maxWaitingPerSeg) {
+      st.dropped++
+      this.droppedTotal++
+      return false
+    }
     if (this.queuedTotal >= this.maxQueuedTotal) {
       // 全体上限: 待ち候補を最も多く抱える区間の末尾を退避して席を空ける(どの区間も最低 1 候補は持てる)。
       // 退避先が無い(全区間 1 候補以下)ときだけ新しい候補を捨てる
@@ -101,6 +120,7 @@ export class OcrQueue<T> {
       }
     }
     st.queue.push(cand)
+    st.lastIndex = cand.index
     this.queuedTotal++
     this.run()
     return true
@@ -126,6 +146,7 @@ export class OcrQueue<T> {
     void (async () => {
       try {
         const outcome = await this.recognize(next.image)
+        this.consecutiveErrors = 0
         if (outcome.timestamp) {
           st.found = true
           for (const c of st.queue) this.release(c.image)
@@ -134,11 +155,18 @@ export class OcrQueue<T> {
         }
         this.onResult({ seg, index: next.index, attempt, outcome })
       } catch (e) {
-        if (!this.failed) {
-          this.failed = true
-          this.onError(e)
+        // タイムアウト等の単発エラーは候補失敗として続行(認識側はワーカーを作り直す)。連続したら停止
+        this.errorCount++
+        this.consecutiveErrors++
+        if (this.consecutiveErrors >= this.maxConsecutiveErrors) {
+          if (!this.failed) {
+            this.failed = true
+            this.onError(e)
+          }
+          this.clearAll()
+        } else {
+          this.onResult({ seg, index: next.index, attempt, outcome: { timestamp: null, sender: null, rawTimestamp: `(error: ${e instanceof Error ? e.message : String(e)})`, rawSender: '' } })
         }
-        this.clearAll()
       } finally {
         this.release(next.image)
         st.running = false
@@ -174,6 +202,7 @@ export class OcrQueue<T> {
 
   /** 区間ごとの統計(ログ用) */
   stats(): Array<{ seg: number; attempts: number; found: boolean; dropped: number }> {
+
     return [...this.segs.entries()].map(([seg, s]) => ({ seg, attempts: s.attempts, found: s.found, dropped: s.dropped }))
   }
 }

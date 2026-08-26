@@ -69,6 +69,17 @@ export class CanvasGraySource implements FrameSource {
     return big
   }
 
+  /** cropGrayUpscaled と同じ内容をグレー 8bit 配列で返す(待ち行列で軽く保持するため) */
+  cropGrayUpscaledArray(colStart: number, colEnd: number, rowStart: number, rowEnd: number, scale: number): { width: number; height: number; gray: Uint8Array } {
+    const cv = this.cropGrayUpscaled(colStart, colEnd, rowStart, rowEnd, scale)
+    const d = cv.getContext('2d')!.getImageData(0, 0, cv.width, cv.height).data
+    const gray = new Uint8Array(cv.width * cv.height)
+    for (let i = 0, j = 0; i < gray.length; i++, j += 4) gray[i] = d[j]
+    const out = { width: cv.width, height: cv.height, gray }
+    cv.width = 0
+    return out
+  }
+
   rgbaRect(colStart: number, colEnd: number, rowStart: number, rowEnd: number): Uint8ClampedArray {
     return this.ctx!.getImageData(colStart, rowStart, colEnd - colStart, rowEnd - rowStart).data
   }

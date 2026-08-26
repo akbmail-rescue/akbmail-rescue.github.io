@@ -137,6 +137,8 @@ export default function App() {
       setStatus('エラー')
       void persistJob({ status: 'error', error: msg }).then(refreshJobs)
       busyRef.current = false
+      // 異常状態の Worker を次の動画に使い回さない(R3 #3): 作り直す
+      setWorkerGen((g) => g + 1)
     }
     w.onerror = (ev) => fail(`WORKER ERROR: ${ev.message ?? 'unknown'} (${ev.filename ?? ''}:${ev.lineno ?? ''})`)
     w.onmessageerror = () => append('WORKER MESSAGE ERROR', 'error')

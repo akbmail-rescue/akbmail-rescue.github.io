@@ -65,8 +65,12 @@ export function newJobId(): string {
 /** 互換用(旧名) */
 export const jobIdFor = fingerprintFor
 
-/** running の heartbeat がこれより古ければ、そのタブは死んだとみなす */
-export const HEARTBEAT_STALE_MS = 60_000
+/**
+ * running の heartbeat がこれより古ければ、そのタブは死んだとみなす。
+ * バックグラウンドタブはタイマーが最長 1 分間隔に抑制される(Chrome の集中スロットリング)ため、
+ * 10 秒間隔の heartbeat でも数分止まりうる。誤中断を避けて 5 分にする(R3 #4)
+ */
+export const HEARTBEAT_STALE_MS = 5 * 60_000
 
 function req<T>(r: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
