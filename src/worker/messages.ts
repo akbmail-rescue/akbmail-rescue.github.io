@@ -22,9 +22,12 @@ export interface OutputItem {
   part?: { index: number; total: number }
 }
 
-export type WorkerRequest = { type: 'analyze'; file: File; assetBase: string }
+export type WorkerRequest = { type: 'analyze'; file: File; assetBase: string; jobId: string }
 
-export type WorkerResponse =
+/** 全応答は jobId(依頼時のもの)を持つ。UI は現在のジョブと一致しない応答を捨てる */
+export type WorkerResponse = WorkerResponseBody & { jobId?: string }
+
+export type WorkerResponseBody =
   | { type: 'track'; info: Omit<VideoTrackInfo, 'description'>; supported: boolean }
   | { type: 'unsupported'; codec: string; message: string }
   | { type: 'frame'; frame: ClassifiedFrame }

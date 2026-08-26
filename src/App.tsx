@@ -10,6 +10,7 @@ import type { OutputItem, WorkerResponse } from './worker/messages'
 import { formatTimestamp, normalizeTimestampInput } from './core/ocr'
 import { ResultStore, fingerprintFor, newJobId, type JobRecord, type StoredSegMeta } from './core/store'
 import { assignFinalNames } from './core/naming'
+import { acceptsMessage } from './core/jobEvents'
 import { RecordingGuide } from './ui/RecordingGuide'
 import './ui/app.css'
 
@@ -141,9 +142,15 @@ export default function App() {
       setWorkerGen((g) => g + 1)
     }
     w.onerror = (ev) => fail(`WORKER ERROR: ${ev.message ?? 'unknown'} (${ev.filename ?? ''}:${ev.lineno ?? ''})`)
-    w.onmessageerror = () => append('WORKER MESSAGE ERROR', 'error')
+    // デシリアライズ失敗も致命エラー扱い(R4 #3): ジョブを error にして Worker を作り直す
+    w.onmessageerror = () => fail('WORKER MESSAGE ERROR: 応答を受け取れませんでした')
     w.onmessage = (e: MessageEvent<WorkerResponse>) => {
       const m = e.data
+      // 世代判定(R4 #2): 現在のジョブ宛てでない応答(旧 Worker の遅延イベント)は捨てる
+      if (!acceptsMessage(m.jobId, jobRef.current?.id ?? null)) {
+        append(`(ignored stale worker message: ${m.type} for job ${m.jobId ?? '-'})`)
+        return
+      }
       lastMsgRef.current = Date.now()
       switch (m.type) {
         case 'track':
@@ -266,7 +273,7 @@ export default function App() {
       append(`env: ${navigator.userAgent} / WebCodecs=${typeof VideoDecoder !== 'undefined'} / OffscreenCanvas=${typeof OffscreenCanvas !== 'undefined'}`)
       // 静的アセット(ffmpeg.wasm / tesseract)の基準 URL。ページ基準で解決するとサブパス配信でも正しい
       const assetBase = new URL(import.meta.env.BASE_URL, document.baseURI).href
-      workerRef.current.postMessage({ type: 'analyze', file, assetBase })
+      workerRef.current.postMessage({ type: 'analyze', file, assetBase, jobId: job.id })
     },
     [append, notePersistFailure, refreshJobs, resetView],
   )

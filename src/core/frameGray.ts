@@ -66,6 +66,7 @@ export class CanvasGraySource implements FrameSource {
     bctx.imageSmoothingEnabled = true
     bctx.imageSmoothingQuality = 'high'
     bctx.drawImage(small, 0, 0, w * scale, h * scale)
+    small.width = 0 // 中間キャンバスは即解放
     return big
   }
 
@@ -76,7 +77,7 @@ export class CanvasGraySource implements FrameSource {
     const gray = new Uint8Array(cv.width * cv.height)
     for (let i = 0, j = 0; i < gray.length; i++, j += 4) gray[i] = d[j]
     const out = { width: cv.width, height: cv.height, gray }
-    cv.width = 0
+    cv.width = 0 // backing store を即解放
     return out
   }
 

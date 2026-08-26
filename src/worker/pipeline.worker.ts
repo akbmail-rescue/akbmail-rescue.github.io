@@ -22,9 +22,12 @@ import { OcrQueue } from '../core/ocrQueue'
 import { rectPixels } from '../core/regions'
 import type { WorkerRequest, WorkerResponse } from './messages'
 
-const post = (msg: WorkerResponse) => self.postMessage(msg)
+/** 現在処理中のジョブ ID。全応答にエコーバックし、UI 側で世代の違う応答を捨てられるようにする(R4 #2) */
+let currentJobId = ''
+const post = (msg: WorkerResponse) => self.postMessage({ ...msg, jobId: currentJobId })
 
-async function analyze(file: File, assetBase: string) {
+async function analyze(file: File, assetBase: string, jobId: string) {
+  currentJobId = jobId
   const started = performance.now()
   post({ type: 'stage', stage: `worker ready: webcodecs=${hasWebCodecs()} offscreen=${typeof OffscreenCanvas !== 'undefined'}` })
   const gray = new CanvasGraySource()
@@ -67,7 +70,8 @@ async function analyze(file: File, assetBase: string) {
     64,
   )
   const scheduleOcr = (seg: number, index: number, src: CanvasGraySource) => {
-    if (ocrQueue.isFailed) return
+    // 受け入れられないフレームには切り出しコストを払わない(R4 #4)
+    if (!ocrQueue.canAccept(seg, index)) return
     const tr = rectPixels(src.width, src.height, OCR_REGIONS.timestamp)
     const sr = rectPixels(src.width, src.height, OCR_REGIONS.sender)
     ocrQueue.offer(seg, {
@@ -255,7 +259,7 @@ class UnsupportedCodecError extends Error {
 self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
   if (e.data.type !== 'analyze') return
   try {
-    await analyze(e.data.file, e.data.assetBase)
+    await analyze(e.data.file, e.data.assetBase, e.data.jobId)
   } catch (err) {
     console.error('[pipeline]', err)
     post({ type: 'error', message: err instanceof Error ? `${err.name}: ${err.message}` : String(err) })

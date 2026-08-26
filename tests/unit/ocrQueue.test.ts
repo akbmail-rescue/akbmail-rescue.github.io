@@ -10,16 +10,16 @@ describe('OcrQueue', () => {
     const released: string[] = []
     const q = new OcrQueue<string>(async (img) => { calls.push(img); await tick(); return ok(img === 'c' ? '2026-01-01_0000' : null) }, () => {}, () => {}, (img) => released.push(img))
     const accepted = ['a', 'b', 'c', 'd', 'e'].map((img) => q.offer(0, { index: img.charCodeAt(0) * 10, image: img }))
-    expect(accepted).toEqual([true, true, true, true, false]) // 待ち上限 3(実行中 a + b,c,d)で e は拒否
+    expect(accepted).toEqual([true, true, true, true, true])
     await q.drain()
     expect(calls).toEqual(['a', 'b', 'c'])
-    expect(released.sort()).toEqual(['a', 'b', 'c', 'd'])
+    expect(released.sort()).toEqual(['a', 'b', 'c', 'd', 'e'])
     expect(q.offer(0, { index: 9000, image: 'f' })).toBe(false) // found 済み
   })
   it('区間の試行上限と全体の保持上限(超過は捨てて dropped に数える)', async () => {
     let block: () => void = () => {}
     const gate = new Promise<void>((r) => (block = r))
-    const q = new OcrQueue<string>(async () => { await gate; return ok(null) }, () => {}, () => {}, () => {}, 3, 4, 3, 1)
+    const q = new OcrQueue<string>(async () => { await gate; return ok(null) }, () => {}, () => {}, () => {}, 3, 4, 8, 1)
     // 区間 0: 試行中 1 + 待ち 2 で上限 3
     expect(q.offer(0, { index: 0, image: 'a' })).toBe(true)
     expect(q.offer(0, { index: 1, image: 'b' })).toBe(true)
@@ -31,24 +31,41 @@ describe('OcrQueue', () => {
     // 上限到達後: 新しい区間 2 の候補は、待ちが多い区間(0 と 1 が 2 ずつ → 先に見つかった方)の末尾を退避して受け入れる
     expect(q.offer(2, { index: 0, image: 'h' })).toBe(true)
     expect(q.queued).toBe(4)
-    // 区間 1 の追加は、自区間が最多でなければ他区間から退避して入る。全区間 1 候補以下になったら捨てる
-    expect(q.offer(1, { index: 2, image: 'g' })).toBe(true)
-    expect(q.droppedTotal).toBe(2)
+    // 他区間に退避できる候補(待ち 2 以上)が無ければ捨てる(自区間の候補を退避してまでは入れない)
+    expect(q.offer(1, { index: 2, image: 'g' })).toBe(false)
+    expect(q.droppedTotal).toBe(3) // d(試行上限)+ c(退避)+ g(全体上限)
     block()
     await q.drain()
     expect(q.idle).toBe(true)
   })
+  it('区間が閉じた後に補充が無くても、区間中に貯めた 8 候補で 8 回試行される(R4 #1)', async () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((r) => (release = r))
+    const attempts: number[] = []
+    const q = new OcrQueue<string>(async () => { await gate; return ok(null) }, (ev) => attempts.push(ev.attempt), () => {})
+    // 区間が開いている間に全フレームを同期投入(OCR は 1 件目でブロック中)→ 以後は補充なし
+    let accepted = 0
+    for (let f = 0; f < 30; f++) if (q.offer(0, { index: f, image: `f${f}` })) accepted++
+    expect(accepted).toBe(8) // 実行中 1 + 待ち 7(間隔 3 で f0,f3,f6,…)
+    expect(q.canAccept(0, 60)).toBe(false)
+    release()
+    await q.drain()
+    expect(attempts).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
+  })
+  it('canAccept は切り出し前の判定で、offer と同じ結果を返す', () => {
+    const q = new OcrQueue<string>(async () => ok(null), () => {}, () => {}, () => {}, 2, 64, 8, 3)
+    expect(q.canAccept(0, 0)).toBe(true)
+    q.offer(0, { index: 0, image: 'a' })
+    expect(q.canAccept(0, 1)).toBe(false) // 間隔
+    expect(q.canAccept(0, 3)).toBe(true)
+    q.offer(0, { index: 3, image: 'b' })
+    expect(q.canAccept(0, 6)).toBe(false) // 試行上限 2
+    expect(q.canAccept(1, 0)).toBe(true)
+  })
   it('drain は後から積まれたジョブ(最終区間の 2〜8 回目の失敗)も待つ(R2 #3)', async () => {
     const attempts: number[] = []
     const q = new OcrQueue<string>(async () => { await tick(); return ok(null) }, (ev) => attempts.push(ev.attempt), () => {})
-    // 待ち上限 3 があるので、実行が進むたびに補充する(実際のパイプラインと同じ)
-    let i = 0
-    while (i < 40 && q.stats()[0]?.attempts !== 8) {
-      q.offer(5, { index: i * 10, image: `i${i}` })
-      i++
-      await tick()
-      await tick()
-    }
+    for (let i = 0; i < 8; i++) q.offer(5, { index: i * 10, image: `i${i}` })
     await q.drain()
     expect(attempts).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
     expect(q.stats()[0]).toMatchObject({ seg: 5, attempts: 8, found: false })

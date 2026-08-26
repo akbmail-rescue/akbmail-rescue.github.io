@@ -3,8 +3,11 @@
  * - 区間ごとに候補(切り出し画像)を順に試し、成功したらその区間は終了(rescue.py の「detail を順に試す」)
  * - 区間ごとの試行上限(maxAttemptsPerSeg)に加えて、動画全体で保持する候補数の上限(maxQueuedTotal)を持つ。
  *   候補はグレー 8bit の切り出し(1 候補 ≈ 0.5MB)なので、上限 64 で約 32MB
- * - 失敗した区間が待ち行列を占有しないよう、待ち中の候補は区間ごと maxWaitingPerSeg(3)まで(R3 #1)。
+ * - 区間ごとの待ち候補は maxWaitingPerSeg(既定 = 試行上限 8)まで保持する。区間が閉じた後は補充されないため、
+ *   失敗区間の 8 回試行を保証するには区間が開いている間に 8 候補を貯めておく必要がある(R4 #1)。
+ *   全体上限に達したときは「待ちが最も多い区間の末尾」を退避して公平性を保つ(長尺では先行の失敗区間の試行数が減る)。
  *   失敗直後の連続フレームはほぼ同じ絵なので、前回候補から minSpacing フレーム以上離れたものだけ受け付ける
+ * - canAccept() で「切り出す前に」受け入れ可否を判定できる(拒否されるフレームに切り出しコストを払わない、R4 #4)
  * - 認識の例外(タイムアウト等)は連続 maxConsecutiveErrors 回までは候補失敗として続行し、超えたら停止(R3 #2)
  * - 認識は全体で 1 本の直列実行(区間番号の小さい=先に閉じる区間を優先)。drain() は「実行中でなく、待ち候補も無い」状態まで待つ
  *   (後から追加されるジョブも取りこぼさない)
@@ -57,7 +60,7 @@ export class OcrQueue<T> {
     private readonly release: (image: T) => void = () => {},
     readonly maxAttemptsPerSeg = 8,
     readonly maxQueuedTotal = 64,
-    readonly maxWaitingPerSeg = 3,
+    readonly maxWaitingPerSeg = 8,
     readonly minSpacing = 3,
     readonly maxConsecutiveErrors = 3,
   ) {}
@@ -80,44 +83,44 @@ export class OcrQueue<T> {
     return s
   }
 
-  /** 候補を投入する。上限に達していれば捨てて false を返す(呼び出し側で release 済みにする) */
-  offer(seg: number, cand: OcrCandidate<T>): boolean {
+  /**
+   * 切り出す前の受け入れ判定(副作用なし)。true なら直後の offer() は受け入れられる
+   * (全体上限に達していても退避で席が作れる場合を含む)
+   */
+  canAccept(seg: number, index: number): boolean {
     if (this.failed) return false
-    const st = this.seg(seg)
-    if (st.found || st.attempts + st.queue.length >= this.maxAttemptsPerSeg) return false
-    // 直前の候補と近すぎるフレームは受け付けない(ほぼ同じ絵で無駄打ちになる)
-    if (cand.index - st.lastIndex < this.minSpacing) return false
-    // 待ち中の候補は区間ごとに上限(失敗中の区間が全体を占有しない)
-    if (st.queue.length >= this.maxWaitingPerSeg) {
-      st.dropped++
-      this.droppedTotal++
+    const st = this.segs.get(seg)
+    if (st) {
+      if (st.found || st.attempts + st.queue.length >= this.maxAttemptsPerSeg) return false
+      if (index - st.lastIndex < this.minSpacing) return false
+      if (st.queue.length >= this.maxWaitingPerSeg) return false
+    }
+    if (this.queuedTotal < this.maxQueuedTotal) return true
+    // 退避できる区間(待ち 2 以上)があれば受け入れ可。自区間しか無ければ不可
+    for (const [id, other] of this.segs) if (id !== seg && other.queue.length > 1) return true
+    return false
+  }
+
+  /** 候補を投入する。受け入れられなければ false を返す(呼び出し側で解放する) */
+  offer(seg: number, cand: OcrCandidate<T>): boolean {
+    if (!this.canAccept(seg, cand.index)) {
+      const st = this.segs.get(seg)
+      if (st && !st.found && cand.index - st.lastIndex >= this.minSpacing) {
+        st.dropped++
+        this.droppedTotal++
+      }
       return false
     }
+    const st = this.seg(seg)
     if (this.queuedTotal >= this.maxQueuedTotal) {
-      // 全体上限: 待ち候補を最も多く抱える区間の末尾を退避して席を空ける(どの区間も最低 1 候補は持てる)。
-      // 退避先が無い(全区間 1 候補以下)ときだけ新しい候補を捨てる
+      // 全体上限: 待ち候補を最も多く抱える他区間の末尾を退避して席を空ける(canAccept で存在は保証済み)
       let victim: SegState<T> | null = null
-      for (const other of this.segs.values()) if (other.queue.length > 1 && (!victim || other.queue.length > victim.queue.length)) victim = other
-      if (!victim || (victim === st && st.queue.length >= 1 && victim.queue.length <= 1)) {
-        st.dropped++
-        this.droppedTotal++
-        return false
-      }
-      const evicted = victim.queue.pop()!
+      for (const [id, other] of this.segs) if (id !== seg && other.queue.length > 1 && (!victim || other.queue.length > victim.queue.length)) victim = other
+      const evicted = victim!.queue.pop()!
       this.release(evicted.image)
       this.queuedTotal--
-      victim.dropped++
+      victim!.dropped++
       this.droppedTotal++
-      if (victim === st && st.queue.length === 0) {
-        // 自区間の唯一の候補を退避してまで入れ替える意味は無い(新しい候補は古いより情報が少ないことが多い)
-        st.queue.push(evicted)
-        this.queuedTotal++
-        victim.dropped--
-        this.droppedTotal--
-        st.dropped++
-        this.droppedTotal++
-        return false
-      }
     }
     st.queue.push(cand)
     st.lastIndex = cand.index
