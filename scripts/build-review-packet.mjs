@@ -30,6 +30,7 @@ const SETS = {
     { p: 'CLAUDE.md', label: '開発方針・不変条件' },
     { p: 'docs/requirements.md', label: '要件定義書' },
     { p: 'README.md', label: 'README' },
+    { p: 'docs/reviews', ext: ['.md'], label: 'レビュー記録(依頼文・是正記録)' },
     { p: 'reference', ext: ['.py'], label: '参照実装(アルゴリズムの正)' },
   ],
 }
