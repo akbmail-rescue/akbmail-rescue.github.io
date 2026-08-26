@@ -21,7 +21,15 @@ export interface StoredSegMeta {
 }
 
 export interface JobRecord {
+  /** ジョブ固有 ID(UUID)。同名ファイルの再投入でも衝突しない */
   id: string
+  /** ファイルの識別子(名前|サイズ|更新時刻)。重複検出の目安にだけ使う */
+  fingerprint?: string
+  /** 処理中のタブの識別子と最終生存時刻。他タブは heartbeat が古い running だけを中断扱いにする */
+  ownerId?: string
+  heartbeatAt?: number
+  /** 永続化に失敗した出力の件数(0 でなければ復元は不完全) */
+  persistFailures?: number
   fileName: string
   fileSize: number
   lastModified: number
@@ -43,10 +51,22 @@ export interface OutputRecord {
   editedTimestamp: string | null
 }
 
-/** ファイルの識別子(内容は読まない。名前・サイズ・更新時刻の組) */
-export function jobIdFor(file: { name: string; size: number; lastModified: number }): string {
+/** ファイルの識別子(内容は読まない。名前・サイズ・更新時刻の組)。重複検出の目安 */
+export function fingerprintFor(file: { name: string; size: number; lastModified: number }): string {
   return `${file.name}|${file.size}|${file.lastModified}`
 }
+
+/** ジョブ ID(UUID)。crypto.randomUUID が無い環境では時刻+乱数 */
+export function newJobId(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID()
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+/** 互換用(旧名) */
+export const jobIdFor = fingerprintFor
+
+/** running の heartbeat がこれより古ければ、そのタブは死んだとみなす */
+export const HEARTBEAT_STALE_MS = 60_000
 
 function req<T>(r: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -96,7 +116,7 @@ export class ResultStore {
     const db = await this.open()
     const tx = db.transaction('jobs', 'readonly')
     const all = await req(tx.objectStore('jobs').getAll())
-    return (all as JobRecord[]).sort((a, b) => b.updatedAt - a.updatedAt)
+    return (all as JobRecord[]).sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt || a.id.localeCompare(b.id))
   }
 
   async getJob(id: string): Promise<JobRecord | undefined> {
@@ -112,17 +132,50 @@ export class ResultStore {
     await done(tx)
   }
 
-  /** 実行中のまま残っているジョブ(前回タブが落ちた等)を interrupted にする */
-  async markInterrupted(): Promise<number> {
+  /**
+   * 実行中のまま残っているジョブ(前回タブが落ちた等)を interrupted にする。
+   * 他タブで現に処理中のもの(heartbeat が新しい、または自タブ所有)は触らない。
+   */
+  async markInterrupted(selfOwnerId: string, now = Date.now()): Promise<number> {
     const jobs = await this.listJobs()
     let n = 0
     for (const j of jobs) {
-      if (j.status === 'running') {
-        await this.putJob({ ...j, status: 'interrupted' })
+      if (j.status !== 'running' || j.ownerId === selfOwnerId) continue
+      const stale = !j.heartbeatAt || now - j.heartbeatAt > HEARTBEAT_STALE_MS
+      if (!stale) continue
+      // 単一トランザクション内で所有者と heartbeat を再確認してから更新する
+      const db = await this.open()
+      const tx = db.transaction('jobs', 'readwrite')
+      const os = tx.objectStore('jobs')
+      const cur = (await req(os.get(j.id))) as JobRecord | undefined
+      if (cur && cur.status === 'running' && (!cur.heartbeatAt || now - cur.heartbeatAt > HEARTBEAT_STALE_MS)) {
+        os.put({ ...cur, status: 'interrupted', updatedAt: now })
         n++
       }
+      await done(tx)
     }
     return n
+  }
+
+  /** 処理中ジョブの生存時刻だけを更新(所有者が一致するときのみ) */
+  async heartbeat(id: string, ownerId: string): Promise<void> {
+    const db = await this.open()
+    const tx = db.transaction('jobs', 'readwrite')
+    const os = tx.objectStore('jobs')
+    const cur = (await req(os.get(id))) as JobRecord | undefined
+    if (cur && cur.ownerId === ownerId && cur.status === 'running') os.put({ ...cur, heartbeatAt: Date.now() })
+    await done(tx)
+  }
+
+  /** 保存領域の見積もり(未対応環境では null) */
+  static async estimate(): Promise<{ usage: number; quota: number } | null> {
+    try {
+      if (typeof navigator === 'undefined' || !navigator.storage?.estimate) return null
+      const e = await navigator.storage.estimate()
+      return { usage: e.usage ?? 0, quota: e.quota ?? 0 }
+    } catch {
+      return null
+    }
   }
 
   async putOutput(rec: OutputRecord): Promise<void> {

@@ -55,6 +55,13 @@ export const SAMPLE_FPS = 6
 
 /** 同時に保持してよいデコード済みフレームの上限(INV-2) */
 export const MAX_RETAINED_FRAMES = 30
+/**
+ * INV-2 の予算配分(合計 ≤ MAX_RETAINED_FRAMES)。
+ *   decoder: open な VideoFrame ≤ 12 + デコード待ちチャンク ≤ 8
+ *   selector: 代表候補 ≤ 2 + fullscreen 保留 ≤ 4
+ *   処理中の現在フレーム 1、スティッチは直前フレームのグレー(画素のみ)1
+ */
+export const FRAME_BUDGET = { decoderOpen: 12, decoderQueue: 8, selectorBest: 2, selectorPending: 4, current: 1, stitchPrev: 1 } as const
 
 /** ピクセル行の区間に変換する。Python の img.crop((0, int(h*y0), w, int(h*y1))) と同じ。 */
 export function bandRows(height: number, band: RelBand): { rowStart: number; rowEnd: number } {

@@ -6,7 +6,7 @@
  *   同時に open なフレームは held 1 枚+処理待ち分のみで、MAX_OPEN_FRAMES を超えたら投入を止める(INV-2)
  */
 import { FpsSampler } from './sampler'
-import { MAX_RETAINED_FRAMES } from './regions'
+import { FRAME_BUDGET, MAX_RETAINED_FRAMES } from './regions'
 import type { Sample } from 'mp4box'
 import type { VideoTrackInfo } from './demux'
 
@@ -25,9 +25,9 @@ export interface DecoderStats {
   peakRetainedFrames: number
 }
 
-const MAX_DECODE_QUEUE = 8
-/** open フレームがこれ以上なら投入を待つ。デコーダ内部キュー分を足しても INV-2 の 30 を超えない値 */
-const MAX_OPEN_FRAMES = 16
+const MAX_DECODE_QUEUE = FRAME_BUDGET.decoderQueue
+/** open フレームがこれ以上なら投入を待つ(INV-2 の予算配分 FRAME_BUDGET) */
+const MAX_OPEN_FRAMES = FRAME_BUDGET.decoderOpen
 
 export function hasWebCodecs(): boolean {
   return typeof VideoDecoder !== 'undefined' && typeof EncodedVideoChunk !== 'undefined'
@@ -58,7 +58,8 @@ export class SampledVideoDecoder {
     private readonly fps: number,
     private readonly onSampled: (f: SampledFrame) => void | Promise<void>,
   ) {
-    if (MAX_OPEN_FRAMES + MAX_DECODE_QUEUE > MAX_RETAINED_FRAMES) throw new Error('frame budget exceeds INV-2')
+    const total = Object.values(FRAME_BUDGET).reduce((a, b) => a + b, 0)
+    if (total > MAX_RETAINED_FRAMES) throw new Error(`frame budget ${total} exceeds INV-2 limit ${MAX_RETAINED_FRAMES}`)
     this.sampler = new FpsSampler<VideoFrame>(fps)
     this.decoder = new VideoDecoder({
       output: (frame) => this.handleOutput(frame),

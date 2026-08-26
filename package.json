@@ -12,7 +12,9 @@
     "fixtures:frames": "bash scripts/extract-ref-frames.sh",
     "e2e:headless": "node scripts/e2e-headless.mjs",
     "postinstall": "bash scripts/copy-tesseract-assets.sh",
-    "assets:tesseract": "bash scripts/copy-tesseract-assets.sh"
+    "assets:tesseract": "bash scripts/copy-tesseract-assets.sh",
+    "notices": "node scripts/build-third-party-notices.mjs",
+    "prebuild": "node scripts/build-third-party-notices.mjs"
   },
   "dependencies": {
     "@ffmpeg/core": "^0.12.10",

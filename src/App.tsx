@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import JSZip from 'jszip'
 import type { OutputItem, WorkerResponse } from './worker/messages'
 import { formatTimestamp, imageFileName, mailFileName, normalizeTimestampInput } from './core/ocr'
-import { ResultStore, jobIdFor, type JobRecord, type StoredSegMeta } from './core/store'
+import { ResultStore, fingerprintFor, newJobId, type JobRecord, type StoredSegMeta } from './core/store'
 import { RecordingGuide } from './ui/RecordingGuide'
 import './ui/app.css'
 
@@ -21,6 +21,10 @@ interface LogLine {
 type Output = OutputItem & { key: string; seq: number; url: string; included: boolean; editedTimestamp: string | null }
 
 const store = ResultStore.available() ? new ResultStore() : null
+/** このタブの識別子(処理中ジョブの所有者) */
+const OWNER_ID = newJobId()
+/** Worker から一定時間メッセージが無ければ停止の疑いを表示する */
+const STALL_WARN_MS = 180_000
 
 const STATUS_LABEL: Record<JobRecord['status'], string> = { running: '処理中', done: '完了', error: 'エラー', interrupted: '中断' }
 
@@ -40,6 +44,10 @@ export default function App() {
   const [showGuide, setShowGuide] = useState(false)
   const [startedAt, setStartedAt] = useState<number | null>(null)
   const [now, setNow] = useState<number>(Date.now())
+  const [persistFailures, setPersistFailures] = useState(0)
+  const [storageNote, setStorageNote] = useState<string>('')
+  const [workerGen, setWorkerGen] = useState(0)
+  const lastMsgRef = useRef<number>(Date.now())
   const keyRef = useRef(0)
   const seqRef = useRef(0)
   const jobRef = useRef<JobRecord | null>(null)
@@ -55,12 +63,17 @@ export default function App() {
     setJobs(await store.listJobs())
   }, [])
 
+  const notePersistFailure = useCallback((what: string, e: unknown) => {
+    setPersistFailures((n) => n + 1)
+    append(`SAVE FAILED (${what}): ${e instanceof Error ? e.message : String(e)} — この結果はブラウザに保存されていません。ZIP を必ずダウンロードしてください`, 'error')
+  }, [append])
+
   const persistJob = useCallback(async (patch: Partial<JobRecord>) => {
     if (!jobRef.current) return
     jobRef.current = { ...jobRef.current, ...patch }
     setCurrentJob(jobRef.current)
-    await store?.putJob(jobRef.current).catch(() => {})
-  }, [])
+    await store?.putJob(jobRef.current).catch((e) => notePersistFailure('job', e))
+  }, [notePersistFailure])
 
   const updateSegMeta = useCallback(
     (id: number, patch: Partial<StoredSegMeta>) => {
@@ -72,14 +85,28 @@ export default function App() {
     [persistJob],
   )
 
-  // 起動時: 前回 running のまま残ったジョブを interrupted に
+  // 起動時: 前回 running のまま残ったジョブ(heartbeat が古いもの)を interrupted に。保存領域も確認
   useEffect(() => {
     if (!store) return
     store
-      .markInterrupted()
+      .markInterrupted(OWNER_ID)
       .then(refreshJobs)
-      .catch(() => {})
-  }, [refreshJobs])
+      .catch((e) => append(`履歴の読み込みに失敗: ${e instanceof Error ? e.message : String(e)}`, 'error'))
+    void ResultStore.estimate().then((e) => {
+      if (!e) return
+      const freeMB = (e.quota - e.usage) / 1024 / 1024
+      if (freeMB < 500) setStorageNote(`ブラウザの保存領域の空きが約 ${Math.round(freeMB)}MB です。結果が保存できない場合があるので、動画ごとに ZIP を保存し履歴を削除してください`)
+    })
+  }, [append, refreshJobs])
+
+  // 処理中は 10 秒ごとに heartbeat(他タブの誤中断を防ぐ)
+  useEffect(() => {
+    const t = setInterval(() => {
+      const j = jobRef.current
+      if (store && j && j.status === 'running' && busyRef.current) void store.heartbeat(j.id, OWNER_ID).catch(() => {})
+    }, 10_000)
+    return () => clearInterval(t)
+  }, [])
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000)
@@ -89,6 +116,7 @@ export default function App() {
   useEffect(() => {
     const w = new Worker(new URL('./worker/pipeline.worker.ts', import.meta.url), { type: 'module' })
     workerRef.current = w
+    lastMsgRef.current = Date.now()
     const fail = (msg: string) => {
       append(msg, 'error')
       setStatus('エラー')
@@ -99,6 +127,7 @@ export default function App() {
     w.onmessageerror = () => append('WORKER MESSAGE ERROR', 'error')
     w.onmessage = (e: MessageEvent<WorkerResponse>) => {
       const m = e.data
+      lastMsgRef.current = Date.now()
       switch (m.type) {
         case 'track':
           append(`track: codec=${m.info.codec} ${m.info.codedWidth}x${m.info.codedHeight} timescale=${m.info.timescale} duration=${m.info.durationSec.toFixed(3)}s samples=${m.info.nbSamples} webcodecs_supported=${m.supported}`)
@@ -130,7 +159,10 @@ export default function App() {
           const seq = seqRef.current++
           const key = `${jobId}/${m.item.name}`
           setOutputs((prev) => [...prev, { ...m.item, key, seq, url: URL.createObjectURL(m.item.blob), included: true, editedTimestamp: null }])
-          void store?.putOutput({ key, jobId, seq, item: m.item, included: true, editedTimestamp: null }).catch(() => {})
+          void store?.putOutput({ key, jobId, seq, item: m.item, included: true, editedTimestamp: null }).catch((e) => {
+            notePersistFailure(`output ${m.item.name}`, e)
+            void persistJob({ persistFailures: (jobRef.current?.persistFailures ?? 0) + 1 })
+          })
           break
         }
         case 'skipped':
@@ -159,7 +191,17 @@ export default function App() {
       }
     }
     return () => w.terminate()
-  }, [append, persistJob, refreshJobs, updateSegMeta])
+  }, [append, notePersistFailure, persistJob, refreshJobs, updateSegMeta, workerGen])
+
+  /** 処理を中止: Worker を破棄して作り直し、ジョブは interrupted(処理済み分は残る) */
+  const cancelCurrent = useCallback(() => {
+    if (!busyRef.current) return
+    busyRef.current = false
+    append('キャンセルしました(処理済みの結果は残ります)', 'error')
+    setStatus('中断(処理済み分を復元)')
+    void persistJob({ status: 'interrupted' }).then(refreshJobs)
+    setWorkerGen((g) => g + 1)
+  }, [append, persistJob, refreshJobs])
 
   const resetView = useCallback(() => {
     setLines([])
@@ -181,8 +223,12 @@ export default function App() {
       resetView()
       setStatus('読み込み中')
       setStartedAt(Date.now())
+      setPersistFailures(0)
       const job: JobRecord = {
-        id: jobIdFor(file),
+        id: newJobId(),
+        fingerprint: fingerprintFor(file),
+        ownerId: OWNER_ID,
+        heartbeatAt: Date.now(),
         fileName: file.name,
         fileSize: file.size,
         lastModified: file.lastModified,
@@ -194,8 +240,7 @@ export default function App() {
       jobRef.current = job
       setCurrentJob(job)
       if (store) {
-        await store.deleteJob(job.id).catch(() => {})
-        await store.putJob(job).catch(() => {})
+        await store.putJob(job).catch((e) => notePersistFailure('job', e))
         await refreshJobs()
       }
       append(`file: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB) type=${file.type || '-'}`)
@@ -204,7 +249,7 @@ export default function App() {
       const assetBase = new URL(import.meta.env.BASE_URL, document.baseURI).href
       workerRef.current.postMessage({ type: 'analyze', file, assetBase })
     },
-    [append, refreshJobs, resetView],
+    [append, notePersistFailure, refreshJobs, resetView],
   )
 
   // キュー: 1 本ずつ順に処理(status が変わるたびに次を確認)
@@ -282,7 +327,7 @@ export default function App() {
 
   const setOutputPatch = (key: string, patch: Partial<Pick<Output, 'included' | 'editedTimestamp'>>) => {
     setOutputs((prev) => prev.map((x) => (x.key === key ? { ...x, ...patch } : x)))
-    void store?.updateOutput(key, patch).catch(() => {})
+    void store?.updateOutput(key, patch).catch((e) => notePersistFailure('edit', e))
   }
 
   const downloadZip = async () => {
@@ -323,6 +368,7 @@ export default function App() {
 
   const includedCount = outputs.filter((o) => o.included).length
   const running = status === '読み込み中' || status === '解析中'
+  const stalled = running && now - lastMsgRef.current > STALL_WARN_MS
   const elapsedSec = startedAt && running ? (now - startedAt) / 1000 : 0
   const remainingSec = running && progress > 0.02 ? (elapsedSec / progress) * (1 - progress) : null
 
@@ -366,7 +412,15 @@ export default function App() {
             </span>
           )}
           {queue.length > 0 && <span> / 待機中 {queue.length} 本</span>}
+          {running && (
+            <button style={{ marginLeft: 12 }} onClick={cancelCurrent}>
+              中止
+            </button>
+          )}
         </div>
+        {stalled && <p className="warn">{Math.round((now - lastMsgRef.current) / 1000)} 秒間、処理の進行がありません。動画が壊れているか、ブラウザが対応していない可能性があります。「中止」で止められます(処理済みの結果は残ります)</p>}
+        {persistFailures > 0 && <p className="warn">結果の保存に {persistFailures} 件失敗しました。この結果はブラウザを閉じると消えるので、必ず ZIP をダウンロードしてください。</p>}
+        {storageNote && <p className="warn">{storageNote}</p>}
         <progress value={progress} max={1} />
       </section>
 
@@ -378,6 +432,7 @@ export default function App() {
               <li key={j.id} className={currentJob?.id === j.id ? 'current' : ''}>
                 <span className="name">{j.fileName}</span>
                 <span className={`badge ${j.status}`}>{STATUS_LABEL[j.status]}</span>
+                {j.persistFailures ? <span className="warn">保存失敗 {j.persistFailures} 件</span> : null}
                 <span className="time">{new Date(j.updatedAt).toLocaleString()}</span>
                 <button disabled={running} onClick={() => restoreJob(j)}>
                   結果を開く
@@ -469,7 +524,10 @@ export default function App() {
       <footer className="app-footer">
         <p>処理はすべてこの端末の中で行われ、動画・画像・文字情報が外部に送られることはありません。保存した画像の取り扱いはご自身の責任でお願いします。</p>
         <p>
-          このツールはオープンソース(GPL-3.0)で公開しています。動画の読み込みに ffmpeg.wasm(GPL)、文字の読み取りに tesseract.js(Apache-2.0)を使用しています。
+          このツールはオープンソース(GPL-3.0)で公開しています。動画の読み込みに ffmpeg.wasm(GPL)、文字の読み取りに tesseract.js(Apache-2.0)ほかを使用しています。{' '}
+          <a href="THIRD_PARTY_NOTICES.txt" target="_blank" rel="noreferrer">
+            使用しているソフトウェアとライセンス
+          </a>
         </p>
       </footer>
     </main>

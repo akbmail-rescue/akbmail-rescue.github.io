@@ -1,4 +1,4 @@
-name: Deploy to GitHub Pages
+name: Test and deploy to GitHub Pages
 on:
   push:
     branches: [main]
@@ -19,9 +19,30 @@ jobs:
         with:
           node-version: 20
           cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Python(合成回帰フィクスチャ用)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg fonts-noto-cjk > /dev/null
+          python -m pip install -q pillow numpy scipy imagehash opencv-python-headless
       - run: npm ci
-      - run: npm run test -- tests/unit
+      - name: 合成スクロール動画のフィクスチャを生成(stitch.py 基準)
+        run: PY=python bash scripts/make-synth-fixtures.sh
+      - name: 単体テスト+合成回帰(フィクスチャ欠落は fail)
+        run: REQUIRE_FIXTURES=synth npx vitest run
       - run: npm run build
+      - name: ブラウザ E2E(合成動画・WebCodecs 経路・外部送信ゼロ)
+        run: |
+          npx playwright-core --version > /dev/null 2>&1 || true
+          PWBIN=$(node -e "console.log(require.resolve('playwright-core/package.json').replace('package.json',''))")
+          npx --yes playwright@1.61.1 install --with-deps chromium > /dev/null
+          npx vite preview --port 4173 --strictPort > preview.log 2>&1 &
+          sleep 3
+          SYNTH=$(mktemp -d) && python scripts/synth_gen_local.py "$SYNTH" > /dev/null
+          CH=$(ls ~/.cache/ms-playwright/chromium-*/chrome-linux*/chrome | head -1)
+          node scripts/e2e-headless.mjs http://localhost:4173/ "$SYNTH/synth/scroll.mp4" e2e.log "$CH" e2e-out | tee e2e.txt
+          grep -q "status=完了" e2e.txt && grep -q "external_requests=0" e2e.txt && ls e2e-out/*.png > /dev/null
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

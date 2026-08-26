@@ -51,6 +51,9 @@ export function normalizeTimestampInput(input: string): string | null {
   const H = Number(h)
   const I = Number(mi)
   if (M < 1 || M > 12 || D < 1 || D > 31 || H > 23 || I > 59) return null
+  // 存在しない日付(2026-02-31 など)を弾く
+  const dt = new Date(Date.UTC(Number(y), M - 1, D))
+  if (dt.getUTCFullYear() !== Number(y) || dt.getUTCMonth() !== M - 1 || dt.getUTCDate() !== D) return null
   return `${y}-${String(M).padStart(2, '0')}-${String(D).padStart(2, '0')}_${String(H).padStart(2, '0')}${String(I).padStart(2, '0')}`
 }
 
@@ -106,20 +109,33 @@ export class OcrService {
   async init(): Promise<void> {
     if (this.worker) return
     const t0 = performance.now()
-    // アセット欠落などで createWorker が永遠に解決しないことがあるため、タイムアウトで失敗にする
-    const timeout = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('tesseract.js の初期化がタイムアウトしました(worker/core/tessdata の配置を確認)')), 90_000))
-    this.worker = await Promise.race([
-      createWorker(['jpn', 'eng'], OEM.LSTM_ONLY, {
-        workerPath: this.paths.workerPath,
-        corePath: this.paths.corePath,
-        langPath: this.paths.langPath,
-        gzip: true,
-        workerBlobURL: false,
-        errorHandler: (e: unknown) => this.log?.(`[tesseract] ${e instanceof Error ? e.message : String(e)}`),
-        logger: () => {},
-      }),
-      timeout,
-    ])
+    // アセット欠落などで createWorker が永遠に解決しないことがあるため、タイムアウトで失敗にする。
+    // race に負けた createWorker が後から解決した場合はリークしないよう即 terminate する
+    const creating = createWorker(['jpn', 'eng'], OEM.LSTM_ONLY, {
+      workerPath: this.paths.workerPath,
+      corePath: this.paths.corePath,
+      langPath: this.paths.langPath,
+      gzip: true,
+      workerBlobURL: false,
+      errorHandler: (e: unknown) => this.log?.(`[tesseract] ${e instanceof Error ? e.message : String(e)}`),
+      logger: () => {},
+    })
+    let timedOut = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<never>((_, rej) => {
+      timer = setTimeout(() => {
+        timedOut = true
+        rej(new Error('tesseract.js の初期化がタイムアウトしました(worker/core/tessdata の配置を確認)'))
+      }, 90_000)
+    })
+    creating.then((w) => {
+      if (timedOut) void w.terminate().catch(() => {})
+    }).catch(() => {})
+    try {
+      this.worker = await Promise.race([creating, timeout])
+    } finally {
+      clearTimeout(timer)
+    }
     this.log?.(`tesseract.js ready in ${((performance.now() - t0) / 1000).toFixed(1)}s`)
   }
 
@@ -139,13 +155,35 @@ export class OcrService {
     return p
   }
 
+  /** 1 回の認識の上限時間。超えたらワーカーを破棄して失敗にする(ハング対策) */
+  static RECOGNIZE_TIMEOUT_MS = 60_000
+
+  private async recognizeWithTimeout(image: OffscreenCanvas): Promise<string> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<never>((_, rej) => {
+      timer = setTimeout(() => rej(new Error('OCR がタイムアウトしました')), OcrService.RECOGNIZE_TIMEOUT_MS)
+    })
+    try {
+      const r = await Promise.race([this.worker!.recognize(image), timeout])
+      return r.data.text ?? ''
+    } catch (e) {
+      // ハングしたワーカーは捨てて次回 init し直す
+      const w = this.worker
+      this.worker = null
+      this.mode = null
+      void w?.terminate().catch(() => {})
+      throw e
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
   /** タイムスタンプ領域(拡大・グレー化済み)の認識。戻り値は "YYYY-MM-DD_HHMM" か null と生テキスト */
   recognizeTimestamp(image: OffscreenCanvas): Promise<{ timestamp: string | null; raw: string }> {
     return this.enqueue(async () => {
       await this.init()
       await this.setMode('timestamp')
-      const r = await this.worker!.recognize(image)
-      const raw = r.data.text ?? ''
+      const raw = await this.recognizeWithTimeout(image)
       return { timestamp: parseTimestamp(raw), raw }
     })
   }
@@ -155,8 +193,7 @@ export class OcrService {
     return this.enqueue(async () => {
       await this.init()
       await this.setMode('sender')
-      const r = await this.worker!.recognize(image)
-      const raw = r.data.text ?? ''
+      const raw = await this.recognizeWithTimeout(image)
       return { sender: cleanSender(raw), raw }
     })
   }

@@ -5,6 +5,13 @@
  * フィクスチャは `npm run fixtures:frames` で生成(gitignore 対象)。無ければ skip。
  */
 import { describe, expect, it } from 'vitest'
+
+/** CI では REQUIRE_FIXTURES に列挙したフィクスチャが無ければ skip ではなく fail にする(F11) */
+const REQUIRED = (process.env.REQUIRE_FIXTURES ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+const fixtureGate = (name: string, have: boolean) => {
+  if (!have && REQUIRED.includes(name)) throw new Error(`フィクスチャ ${name} が無いためテストを実行できません(REQUIRE_FIXTURES=${REQUIRED.join(',')})`)
+  return have
+}
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { PNG } from 'pngjs'
@@ -51,7 +58,7 @@ for (const c of CASES) {
   const framesDir = join(__dirname, '../fixtures', c.framesDir)
   const have = existsSync(framesDir) && readdirSync(framesDir).some((f) => f.endsWith('.png'))
 
-  describe.skipIf(!have)(`パリティ: ${c.name}`, () => {
+  describe.skipIf(!fixtureGate('samples', have))(`パリティ: ${c.name}`, () => {
     it(
       `${c.frames} フレームの分類が Python 版と完全一致し、境界立ち上がり ${c.boundaryRises} / 区間 ${c.segments} / メール区間 ${c.mailSegments}`,
       () => {

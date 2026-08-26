@@ -4,6 +4,13 @@
  * フィクスチャ: tests/fixtures/*.ref_select.json(scratchpad の ref_select.py で生成)
  */
 import { describe, expect, it } from 'vitest'
+
+/** CI では REQUIRE_FIXTURES に列挙したフィクスチャが無ければ skip ではなく fail にする(F11) */
+const REQUIRED = (process.env.REQUIRE_FIXTURES ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+const fixtureGate = (name: string, have: boolean) => {
+  if (!have && REQUIRED.includes(name)) throw new Error(`フィクスチャ ${name} が無いためテストを実行できません(REQUIRE_FIXTURES=${REQUIRED.join(',')})`)
+  return have
+}
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { PNG } from 'pngjs'
@@ -28,7 +35,7 @@ const CASES = [
 for (const c of CASES) {
   const framesDir = join(__dirname, '../fixtures', c.framesDir)
   const have = existsSync(framesDir) && readdirSync(framesDir).some((f) => f.endsWith('.png'))
-  describe.skipIf(!have)(`S-2 パリティ: ${c.name}`, () => {
+  describe.skipIf(!fixtureGate('samples', have))(`S-2 パリティ: ${c.name}`, () => {
     it(
       `pHash 全一致、mail ${c.mails} / image ${c.images} の選定結果が rescue.py と一致`,
       () => {

@@ -17,11 +17,12 @@
  */
 import type { FrameCategory } from './classify'
 import { hammingDistance, type PHash } from './phash'
+import { FRAME_BUDGET } from './regions'
 
 export const STABLE_MAX_DISTANCE = 2
 export const DUP_MAX_DISTANCE = 6
-/** 1 区間で保留できる fullscreen 候補の上限(INV-2 のガード)。超過分は INV-7 に従い skipped として報告する */
-export const MAX_PENDING_IMAGES = 20
+/** 1 区間で保留できる fullscreen 候補の上限(INV-2 の予算配分)。超過分は INV-7 に従い skipped として報告する */
+export const MAX_PENDING_IMAGES = FRAME_BUDGET.selectorPending
 
 export interface CandidateFrame<T> {
   index: number

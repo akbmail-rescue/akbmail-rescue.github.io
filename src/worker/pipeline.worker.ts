@@ -39,40 +39,56 @@ async function analyze(file: File, assetBase: string) {
     { workerPath: `${assetBase}tesseract/worker.min.js`, corePath: `${assetBase}tesseract-core/`, langPath: `${assetBase}tessdata/` },
     (m) => post({ type: 'stage', stage: m }),
   )
-  const ocrState = new Map<number, { attempts: number; found: boolean; pending: boolean }>()
+  // 区間ごとの OCR 状態。認識中に到着した後続 detail フレームの切り出しは小さな有界キュー(最大 MAX_OCR_ATTEMPTS 枚、
+  // 1 枚 ≈ 数百 KB)に貯め、失敗したら次を試す(rescue.py の「detail を順に試す」と同じ)。認識は 1 本の直列キュー
+  interface OcrSeg {
+    attempts: number
+    found: boolean
+    running: boolean
+    queue: Array<{ index: number; ts: OffscreenCanvas; sd: OffscreenCanvas }>
+  }
+  const ocrState = new Map<number, OcrSeg>()
   const ocrJobs: Promise<void>[] = []
   let ocrFailed = false
-  const scheduleOcr = (seg: number, index: number, src: CanvasGraySource) => {
-    if (ocrFailed) return
-    const st = ocrState.get(seg) ?? { attempts: 0, found: false, pending: false }
-    // 結果待ちの間は次の試行を積まない(同じ区間で無駄に走らせない)。失敗したら次の detail フレームで再試行
-    if (st.found || st.pending || st.attempts >= MAX_OCR_ATTEMPTS) return
-    st.attempts++
-    st.pending = true
-    ocrState.set(seg, st)
-    const attempt = st.attempts
-    const tr = rectPixels(src.width, src.height, OCR_REGIONS.timestamp)
-    const sr = rectPixels(src.width, src.height, OCR_REGIONS.sender)
-    const tsImg = src.cropGrayUpscaled(tr.colStart, tr.colEnd, tr.rowStart, tr.rowEnd, OCR_UPSCALE)
-    const sdImg = src.cropGrayUpscaled(sr.colStart, sr.colEnd, sr.rowStart, sr.rowEnd, OCR_UPSCALE)
+  const runOcr = (seg: number, st: OcrSeg): void => {
+    if (st.running || st.found || ocrFailed) return
+    const next = st.queue.shift()
+    if (!next) return
+    st.running = true
+    const attempt = ++st.attempts
     const job = (async () => {
       try {
-        const t = await ocr.recognizeTimestamp(tsImg)
+        const t = await ocr.recognizeTimestamp(next.ts)
         let sender: { sender: string | null; raw: string } = { sender: null, raw: '' }
         if (t.timestamp) {
           st.found = true
-          sender = await ocr.recognizeSender(sdImg)
+          st.queue = []
+          sender = await ocr.recognizeSender(next.sd)
         }
-        post({ type: 'ocr', seg, index, attempt, timestamp: t.timestamp, sender: sender.sender, rawTimestamp: t.raw.trim(), rawSender: sender.raw.trim() })
+        post({ type: 'ocr', seg, index: next.index, attempt, timestamp: t.timestamp, sender: sender.sender, rawTimestamp: t.raw.trim(), rawSender: sender.raw.trim() })
       } catch (e) {
-        st.pending = false
         ocrFailed = true
         post({ type: 'stage', stage: `OCR unavailable: ${(e as Error).message}(メタデータは unknown になります)` })
       } finally {
-        st.pending = false
+        st.running = false
+        runOcr(seg, st)
       }
     })()
     ocrJobs.push(job)
+  }
+  const scheduleOcr = (seg: number, index: number, src: CanvasGraySource) => {
+    if (ocrFailed) return
+    const st = ocrState.get(seg) ?? { attempts: 0, found: false, running: false, queue: [] }
+    ocrState.set(seg, st)
+    if (st.found || st.attempts + st.queue.length >= MAX_OCR_ATTEMPTS) return
+    const tr = rectPixels(src.width, src.height, OCR_REGIONS.timestamp)
+    const sr = rectPixels(src.width, src.height, OCR_REGIONS.sender)
+    st.queue.push({
+      index,
+      ts: src.cropGrayUpscaled(tr.colStart, tr.colEnd, tr.rowStart, tr.rowEnd, OCR_UPSCALE),
+      sd: src.cropGrayUpscaled(sr.colStart, sr.colEnd, sr.rowStart, sr.rowEnd, OCR_UPSCALE),
+    })
+    runOcr(seg, st)
   }
 
   // S-3: 区間ごとのスティッチ(detail フレームのみ投入)。区間が閉じたら結果を取り出して破棄する
@@ -109,7 +125,8 @@ async function analyze(file: File, assetBase: string) {
     const accepted = st.acceptedCount
     const height = comp.height
     lastFixedRows = st.fixedRows
-    post({ type: 'stage', stage: `stitch: frames=${st.decisions.length} accepted=${accepted} identical_skipped=${st.identicalSkipped} height=${height}px fixedRows=${st.fixedRows}` })
+    post({ type: 'stage', stage: `stitch: frames=${st.decisions.length} accepted=${accepted} identical_skipped=${st.identicalSkipped} height=${height}px fixedRows=${st.fixedRows}${comp.truncatedRows ? ` TRUNCATED(${comp.truncatedRows} rows dropped: メモリ上限)` : ''}` })
+    if (comp.truncatedRows) post({ type: 'skipped', what: 'mail', reason: `stitch_truncated_${comp.truncatedRows}_rows`, seg: -1, index: -1, t: 0, hash: '' })
     if (accepted === 0) {
       comp.dispose()
       return null

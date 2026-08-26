@@ -5,6 +5,10 @@
 import type { Compositor } from './stitch'
 
 const TILE_ROWS = 1024
+/** 1 区間のスティッチ結果の最大行数。1290px 幅で約 125MB(RGBA)。超えた分は継ぎ足さず truncated として報告する(INV-3 / INV-7) */
+export const MAX_STITCH_ROWS = 24000
+/** PNG 出力時の 1 パートの最大行数(出力キャンバス約 40MB) */
+export const PART_ROWS = 8000
 
 export interface FrameRegion {
   /** 描画元(現在フレームを描いた OffscreenCanvas 等) */
@@ -19,7 +23,12 @@ export interface FrameRegion {
 export class TiledCanvasCompositor implements Compositor<FrameRegion> {
   private tiles: OffscreenCanvas[] = []
   private rows = 0
-  constructor(readonly width: number) {}
+  /** 上限により捨てた行数 */
+  truncatedRows = 0
+  constructor(
+    readonly width: number,
+    readonly maxRows = MAX_STITCH_ROWS,
+  ) {}
 
   get height(): number {
     return this.rows
@@ -55,6 +64,11 @@ export class TiledCanvasCompositor implements Compositor<FrameRegion> {
   }
 
   append(frame: FrameRegion, addRows: number, skip: number, frameRows: number): void {
+    if (this.rows + addRows > this.maxRows) {
+      // メモリ上限(INV-3): これ以上は継ぎ足さない。黙って捨てず truncatedRows で可視化する(INV-7)
+      this.truncatedRows += addRows
+      return
+    }
     const dst = this.rows
     this.rows += addRows
     this.ensureRows(this.rows)
@@ -63,7 +77,7 @@ export class TiledCanvasCompositor implements Compositor<FrameRegion> {
   }
 
   /** 全体を 1 枚の PNG にする。キャンバス上限を超える高さは複数パートに分ける */
-  async toBlobs(maxRows = 30000): Promise<Blob[]> {
+  async toBlobs(maxRows = PART_ROWS): Promise<Blob[]> {
     const blobs: Blob[] = []
     for (let start = 0; start < this.rows; start += maxRows) {
       const h = Math.min(maxRows, this.rows - start)

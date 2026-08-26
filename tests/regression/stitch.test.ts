@@ -6,6 +6,13 @@
  * フィクスチャ: `PY=<venv> bash scripts/make-synth-fixtures.sh` で生成(frames / ground_truth は gitignore)
  */
 import { describe, expect, it } from 'vitest'
+
+/** CI では REQUIRE_FIXTURES に列挙したフィクスチャが無ければ skip ではなく fail にする(F11) */
+const REQUIRED = (process.env.REQUIRE_FIXTURES ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+const fixtureGate = (name: string, have: boolean) => {
+  if (!have && REQUIRED.includes(name)) throw new Error(`フィクスチャ ${name} が無いためテストを実行できません(REQUIRE_FIXTURES=${REQUIRED.join(',')})`)
+  return have
+}
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { PNG } from 'pngjs'
@@ -67,7 +74,7 @@ function bestNcc(canvas: Float64Array, cw: number, chh: number, tpl: Float64Arra
   return best
 }
 
-describe.skipIf(!have)('S-3 スティッチ回帰(合成スクロール動画)', () => {
+describe.skipIf(!fixtureGate('synth', have))('S-3 スティッチ回帰(合成スクロール動画)', () => {
   const files = have ? readdirSync(join(DIR, 'frames')).filter((f) => /^t_\d+\.png$/.test(f)).sort() : []
 
   it(
