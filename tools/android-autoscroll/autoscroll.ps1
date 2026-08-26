@@ -84,8 +84,14 @@ try {
     if (-not $remoteSize -or $remoteSize -notmatch "^\d+$") { continue }   # 端末側に無い(録画されなかった)
     A pull $f $tmp 2>$null | Out-Null
     $ok = ($LASTEXITCODE -eq 0) -and (Test-Path $tmp) -and ((Get-Item $tmp).Length -gt 0) -and ((Get-Item $tmp).Length -eq [int64]$remoteSize)
+    $moved = $false
     if ($ok) {
-      Move-Item -Force $tmp $final
+      try {
+        Move-Item -Force -ErrorAction Stop $tmp $final
+        $moved = (Test-Path $final) -and ((Get-Item $final).Length -eq [int64]$remoteSize)
+      } catch { $moved = $false }
+    }
+    if ($moved) {
       A shell rm -f $f 2>$null | Out-Null
       Write-Host ("  取り込み完了 {0}  {1:N1} MB" -f $name, ((Get-Item $final).Length / 1MB))
     } else {

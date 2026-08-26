@@ -13,6 +13,11 @@ describe('parseTimestamp (rescue.py ocr_timestamp の正規表現)', () => {
   it('OCR ノイズが前後にあっても抽出する', () => {
     expect(parseTimestamp('-- 2026-08-23 21:07 :')).toBe('2026-08-23_2107')
   })
+  it('OCR 結果でも実在しない日時は null(R2 #7)', () => {
+    expect(parseTimestamp('2026-02-31 12:00')).toBeNull()
+    expect(parseTimestamp('2026-08-25 25:99')).toBeNull()
+    expect(parseTimestamp('2024-02-29 00:00')).toBe('2024-02-29_0000')
+  })
   it('20xx 以外や欠損は null', () => {
     expect(parseTimestamp('1999-08-25 22:59')).toBeNull()
     expect(parseTimestamp('2026-08-25')).toBeNull()

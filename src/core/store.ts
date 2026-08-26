@@ -133,6 +133,27 @@ export class ResultStore {
   }
 
   /**
+   * ジョブの部分更新。DB 上の現行レコードに patch を重ねる(単一トランザクション)。
+   * heartbeatAt / ownerId は patch に含まれない限り DB の値を保持する(古い値で巻き戻さない、R2 #4)。
+   * レコードが無ければ fallback を保存する
+   */
+  async patchJob(id: string, patch: Partial<JobRecord>, fallback?: JobRecord): Promise<JobRecord | undefined> {
+    const db = await this.open()
+    const tx = db.transaction('jobs', 'readwrite')
+    const os = tx.objectStore('jobs')
+    const cur = (await req(os.get(id))) as JobRecord | undefined
+    const base = cur ?? fallback
+    if (!base) {
+      await done(tx)
+      return undefined
+    }
+    const next: JobRecord = { ...base, ...patch, updatedAt: Date.now() }
+    os.put(next)
+    await done(tx)
+    return next
+  }
+
+  /**
    * 実行中のまま残っているジョブ(前回タブが落ちた等)を interrupted にする。
    * 他タブで現に処理中のもの(heartbeat が新しい、または自タブ所有)は触らない。
    */

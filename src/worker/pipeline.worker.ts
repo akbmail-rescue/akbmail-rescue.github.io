@@ -18,6 +18,7 @@ import { STATUS_BAR_TOP } from '../core/regions'
 import { STITCH_FIXED_TOP, Stitcher, rgbaToGrayCv } from '../core/stitch'
 import { TiledCanvasCompositor, type FrameRegion } from '../core/stitchCanvas'
 import { MAX_OCR_ATTEMPTS, OCR_REGIONS, OCR_UPSCALE, OcrService } from '../core/ocr'
+import { OcrQueue } from '../core/ocrQueue'
 import { rectPixels } from '../core/regions'
 import type { WorkerRequest, WorkerResponse } from './messages'
 
@@ -39,56 +40,36 @@ async function analyze(file: File, assetBase: string) {
     { workerPath: `${assetBase}tesseract/worker.min.js`, corePath: `${assetBase}tesseract-core/`, langPath: `${assetBase}tessdata/` },
     (m) => post({ type: 'stage', stage: m }),
   )
-  // 区間ごとの OCR 状態。認識中に到着した後続 detail フレームの切り出しは小さな有界キュー(最大 MAX_OCR_ATTEMPTS 枚、
-  // 1 枚 ≈ 数百 KB)に貯め、失敗したら次を試す(rescue.py の「detail を順に試す」と同じ)。認識は 1 本の直列キュー
-  interface OcrSeg {
-    attempts: number
-    found: boolean
-    running: boolean
-    queue: Array<{ index: number; ts: OffscreenCanvas; sd: OffscreenCanvas }>
-  }
-  const ocrState = new Map<number, OcrSeg>()
-  const ocrJobs: Promise<void>[] = []
-  let ocrFailed = false
-  const runOcr = (seg: number, st: OcrSeg): void => {
-    if (st.running || st.found || ocrFailed) return
-    const next = st.queue.shift()
-    if (!next) return
-    st.running = true
-    const attempt = ++st.attempts
-    const job = (async () => {
-      try {
-        const t = await ocr.recognizeTimestamp(next.ts)
-        let sender: { sender: string | null; raw: string } = { sender: null, raw: '' }
-        if (t.timestamp) {
-          st.found = true
-          st.queue = []
-          sender = await ocr.recognizeSender(next.sd)
-        }
-        post({ type: 'ocr', seg, index: next.index, attempt, timestamp: t.timestamp, sender: sender.sender, rawTimestamp: t.raw.trim(), rawSender: sender.raw.trim() })
-      } catch (e) {
-        ocrFailed = true
-        post({ type: 'stage', stage: `OCR unavailable: ${(e as Error).message}(メタデータは unknown になります)` })
-      } finally {
-        st.running = false
-        runOcr(seg, st)
-      }
-    })()
-    ocrJobs.push(job)
-  }
+  // OCR 待ち行列(R1 #4 / R2 #2, #3): 区間ごとに最大 8 候補、全体で最大 16 候補(≈32MB)、直列実行、drain は後着ジョブも待つ
+  const ocrQueue = new OcrQueue<{ ts: OffscreenCanvas; sd: OffscreenCanvas }>(
+    async (img) => {
+      const t = await ocr.recognizeTimestamp(img.ts)
+      let sender: { sender: string | null; raw: string } = { sender: null, raw: '' }
+      if (t.timestamp) sender = await ocr.recognizeSender(img.sd)
+      return { timestamp: t.timestamp, sender: sender.sender, rawTimestamp: t.raw.trim(), rawSender: sender.raw.trim() }
+    },
+    (ev) => post({ type: 'ocr', seg: ev.seg, index: ev.index, attempt: ev.attempt, timestamp: ev.outcome.timestamp, sender: ev.outcome.sender, rawTimestamp: ev.outcome.rawTimestamp, rawSender: ev.outcome.rawSender }),
+    (e) => post({ type: 'stage', stage: `OCR unavailable: ${(e as Error).message}(メタデータは unknown になります)` }),
+    (img) => {
+      // OffscreenCanvas は GC 任せだが、参照を切るためサイズを 0 にして即解放する
+      img.ts.width = 0
+      img.sd.width = 0
+    },
+    MAX_OCR_ATTEMPTS,
+    16,
+  )
   const scheduleOcr = (seg: number, index: number, src: CanvasGraySource) => {
-    if (ocrFailed) return
-    const st = ocrState.get(seg) ?? { attempts: 0, found: false, running: false, queue: [] }
-    ocrState.set(seg, st)
-    if (st.found || st.attempts + st.queue.length >= MAX_OCR_ATTEMPTS) return
+    if (ocrQueue.isFailed) return
     const tr = rectPixels(src.width, src.height, OCR_REGIONS.timestamp)
     const sr = rectPixels(src.width, src.height, OCR_REGIONS.sender)
-    st.queue.push({
-      index,
+    const img = {
       ts: src.cropGrayUpscaled(tr.colStart, tr.colEnd, tr.rowStart, tr.rowEnd, OCR_UPSCALE),
       sd: src.cropGrayUpscaled(sr.colStart, sr.colEnd, sr.rowStart, sr.rowEnd, OCR_UPSCALE),
-    })
-    runOcr(seg, st)
+    }
+    if (!ocrQueue.offer(seg, { index, image: img })) {
+      img.ts.width = 0
+      img.sd.width = 0
+    }
   }
 
   // S-3: 区間ごとのスティッチ(detail フレームのみ投入)。区間が閉じたら結果を取り出して破棄する
@@ -193,9 +174,12 @@ async function analyze(file: File, assetBase: string) {
   }
   const finish = async (stats: DecoderStats, path: 'webcodecs' | 'ffmpeg.wasm') => {
     for (const ev of segmenter.finish()) await emit(ev)
-    post({ type: 'stage', stage: `waiting for OCR (${ocrJobs.length} jobs)` })
-    await Promise.allSettled(ocrJobs)
+    post({ type: 'stage', stage: `waiting for OCR (queued=${ocrQueue.queued})` })
+    await ocrQueue.drain()
     await ocr.terminate().catch(() => {})
+    const st = ocrQueue.stats()
+    post({ type: 'stage', stage: `ocr summary: segments=${st.length} found=${st.filter((x) => x.found).length} attempts=${st.reduce((a, x) => a + x.attempts, 0)} dropped=${ocrQueue.droppedTotal}` })
+    if (ocrQueue.droppedTotal > 0) post({ type: 'skipped', what: 'mail', reason: `ocr_candidates_dropped_${ocrQueue.droppedTotal}`, seg: -1, index: -1, t: 0, hash: '' })
     post({ type: 'done', summary: summarize(segmenter), stats, elapsedMs: performance.now() - started, path, outputs: { ...counts, peakRetainedImages, stitchMsPerFrame: stitchFrames ? stitchMs / stitchFrames : 0 } })
   }
 

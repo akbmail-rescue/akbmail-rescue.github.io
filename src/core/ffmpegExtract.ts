@@ -22,6 +22,9 @@ export interface FfmpegExtractOptions {
   log?: (msg: string) => void
 }
 
+/** 1 チャンク(chunkSec 秒)の ffmpeg 実行上限。遅い端末でも 3 秒分の HEVC 復号に 5 分はかからない想定。超過は例外(ハング対策、R2 #5) */
+export const EXEC_TIMEOUT_MS = 5 * 60 * 1000
+
 const MOUNT = '/input'
 const OUT = '/out'
 
@@ -67,7 +70,8 @@ export async function extractWithFfmpeg(file: File, opt: FfmpegExtractOptions): 
     for (let start = 0; start < opt.durationSec; start += chunkSec) {
       const len = Math.min(chunkSec, opt.durationSec - start)
       const baseSlot = Math.round(start * fps)
-      const rc = await ff.exec([
+      const rc = await ff.exec(
+        [
         '-hide_banner',
         '-loglevel', 'error',
         '-ss', start.toFixed(6),
@@ -77,8 +81,10 @@ export async function extractWithFfmpeg(file: File, opt: FfmpegExtractOptions): 
         '-vf', `fps=${fps}`,
         '-f', 'image2',
         `${OUT}/f_%05d.png`,
-      ])
-      if (rc !== 0) throw new Error(`ffmpeg exited with ${rc} at ${start}s`)
+        ],
+        EXEC_TIMEOUT_MS,
+      )
+      if (rc !== 0) throw new Error(rc === -1 ? `ffmpeg が ${start}s のチャンクで ${EXEC_TIMEOUT_MS / 1000} 秒以内に終わりませんでした(タイムアウト)` : `ffmpeg exited with ${rc} at ${start}s`)
       const files = (await ff.listDir(OUT))
         .filter((n) => !n.isDir && /^f_\d+\.png$/.test(n.name))
         .map((n) => n.name)

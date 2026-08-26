@@ -46,6 +46,21 @@ describe('ResultStore (IndexedDB)', () => {
     expect((await store.getJob('mine'))!.status).toBe('running')
     expect((await store.getJob('j2'))!.status).toBe('done')
   })
+  it('patchJob は DB 上の新しい heartbeat を巻き戻さない(R2 #4)', async () => {
+    await store.putJob({ ...job('j1', 'running'), ownerId: 'me', heartbeatAt: 1 })
+    await store.heartbeat('j1', 'me')
+    const hb = (await store.getJob('j1'))!.heartbeatAt!
+    expect(hb).toBeGreaterThan(1)
+    // 古い heartbeat を持つスナップショットからの部分更新
+    await store.patchJob('j1', { summaryText: 'x' })
+    const after = (await store.getJob('j1'))!
+    expect(after.heartbeatAt).toBe(hb)
+    expect(after.summaryText).toBe('x')
+    // レコードが無ければ fallback を保存
+    expect(await store.patchJob('nope', { status: 'done' })).toBeUndefined()
+    await store.patchJob('j9', { status: 'done' }, job('j9'))
+    expect((await store.getJob('j9'))!.status).toBe('done')
+  })
   it('heartbeat は所有者が一致する running だけ更新する', async () => {
     await store.putJob({ ...job('j1', 'running'), ownerId: 'me', heartbeatAt: 1 })
     await store.heartbeat('j1', 'other')

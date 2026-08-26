@@ -7,8 +7,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import JSZip from 'jszip'
 import type { OutputItem, WorkerResponse } from './worker/messages'
-import { formatTimestamp, imageFileName, mailFileName, normalizeTimestampInput } from './core/ocr'
+import { formatTimestamp, normalizeTimestampInput } from './core/ocr'
 import { ResultStore, fingerprintFor, newJobId, type JobRecord, type StoredSegMeta } from './core/store'
+import { assignFinalNames } from './core/naming'
 import { RecordingGuide } from './ui/RecordingGuide'
 import './ui/app.css'
 
@@ -25,6 +26,8 @@ const store = ResultStore.available() ? new ResultStore() : null
 const OWNER_ID = newJobId()
 /** Worker から一定時間メッセージが無ければ停止の疑いを表示する */
 const STALL_WARN_MS = 180_000
+/** さらにこの時間メッセージが無ければ自動で中止する(ハング対策、R2 #5) */
+const STALL_ABORT_MS = 600_000
 
 const STATUS_LABEL: Record<JobRecord['status'], string> = { running: '処理中', done: '完了', error: 'エラー', interrupted: '中断' }
 
@@ -53,6 +56,7 @@ export default function App() {
   const jobRef = useRef<JobRecord | null>(null)
   const segMetaRef = useRef<Record<number, StoredSegMeta>>({})
   const busyRef = useRef(false)
+  const cancelCurrentRef = useRef<((reason?: string) => void) | null>(null)
 
   const append = useCallback((text: string, kind: LogLine['kind'] = 'info') => {
     setLines((prev) => (prev.length > 5000 ? prev.slice(-4000) : prev).concat({ key: keyRef.current++, text, kind }))
@@ -72,7 +76,12 @@ export default function App() {
     if (!jobRef.current) return
     jobRef.current = { ...jobRef.current, ...patch }
     setCurrentJob(jobRef.current)
-    await store?.putJob(jobRef.current).catch((e) => notePersistFailure('job', e))
+    // 部分更新: DB 上の heartbeat を古い値で巻き戻さない(R2 #4)
+    const saved = await store?.patchJob(jobRef.current.id, patch, jobRef.current).catch((e) => {
+      notePersistFailure('job', e)
+      return undefined
+    })
+    if (saved && jobRef.current && saved.id === jobRef.current.id) jobRef.current = { ...jobRef.current, heartbeatAt: saved.heartbeatAt }
   }, [notePersistFailure])
 
   const updateSegMeta = useCallback(
@@ -112,6 +121,12 @@ export default function App() {
     const t = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(t)
   }, [])
+
+  // 無応答が STALL_ABORT_MS を超えたら自動中止(R2 #5)
+  useEffect(() => {
+    if (!(status === '読み込み中' || status === '解析中')) return
+    if (now - lastMsgRef.current > STALL_ABORT_MS) cancelCurrentRef.current?.('無応答のため自動で中止しました')
+  }, [now, status])
 
   useEffect(() => {
     const w = new Worker(new URL('./worker/pipeline.worker.ts', import.meta.url), { type: 'module' })
@@ -194,14 +209,16 @@ export default function App() {
   }, [append, notePersistFailure, persistJob, refreshJobs, updateSegMeta, workerGen])
 
   /** 処理を中止: Worker を破棄して作り直し、ジョブは interrupted(処理済み分は残る) */
-  const cancelCurrent = useCallback(() => {
+  const cancelCurrent = useCallback((reason?: string) => {
     if (!busyRef.current) return
     busyRef.current = false
-    append('キャンセルしました(処理済みの結果は残ります)', 'error')
+    append(`${reason ?? 'キャンセルしました'}(処理済みの結果は残ります)`, 'error')
     setStatus('中断(処理済み分を復元)')
     void persistJob({ status: 'interrupted' }).then(refreshJobs)
     setWorkerGen((g) => g + 1)
   }, [append, persistJob, refreshJobs])
+
+  cancelCurrentRef.current = cancelCurrent
 
   const resetView = useCallback(() => {
     setLines([])
@@ -297,33 +314,8 @@ export default function App() {
     await refreshJobs()
   }
 
-  /** 最終ファイル名(出現順。同一日時は _2, _3 …、unknown の番号は何通目か) */
-  const finalNames = useMemo(() => {
-    const names = new Map<string, string>()
-    const seen = new Map<string, number>()
-    let mails = 0
-    let images = 0
-    for (const o of outputs) {
-      if (!o.included) continue
-      if (o.kind === 'image') {
-        names.set(o.key, imageFileName(++images))
-        continue
-      }
-      if (!o.part || o.part.index === 1) mails++
-      const ts = o.editedTimestamp ?? segMeta[o.seg]?.timestamp ?? null
-      let base: string
-      if (ts) {
-        const dup = seen.get(ts) ?? 0
-        seen.set(ts, dup + 1)
-        base = mailFileName(ts, 0, dup)
-      } else {
-        base = mailFileName(null, mails)
-      }
-      if (o.part) base = base.replace(/\.png$/, `_p${o.part.index}of${o.part.total}.png`)
-      names.set(o.key, base)
-    }
-    return names
-  }, [outputs, segMeta])
+  /** 最終ファイル名(出現順・分割は 1 通扱い。src/core/naming.ts) */
+  const finalNames = useMemo(() => assignFinalNames(outputs, (seg) => segMeta[seg]?.timestamp ?? null), [outputs, segMeta])
 
   const setOutputPatch = (key: string, patch: Partial<Pick<Output, 'included' | 'editedTimestamp'>>) => {
     setOutputs((prev) => prev.map((x) => (x.key === key ? { ...x, ...patch } : x)))
@@ -413,7 +405,7 @@ export default function App() {
           )}
           {queue.length > 0 && <span> / 待機中 {queue.length} 本</span>}
           {running && (
-            <button style={{ marginLeft: 12 }} onClick={cancelCurrent}>
+            <button style={{ marginLeft: 12 }} onClick={() => cancelCurrent()}>
               中止
             </button>
           )}

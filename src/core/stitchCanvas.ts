@@ -5,8 +5,12 @@
 import type { Compositor } from './stitch'
 
 const TILE_ROWS = 1024
-/** 1 区間のスティッチ結果の最大行数。1290px 幅で約 125MB(RGBA)。超えた分は継ぎ足さず truncated として報告する(INV-3 / INV-7) */
-export const MAX_STITCH_ROWS = 24000
+/** 1 区間のスティッチ結果に使うタイルの最大バイト数(RGBA)。幅に応じて行数上限に換算する(INV-3 / INV-7、R2 #6) */
+export const MAX_STITCH_BYTES = 128 * 1024 * 1024
+/** 幅から行数上限を求める */
+export function maxRowsForWidth(width: number, bytes = MAX_STITCH_BYTES): number {
+  return Math.max(1, Math.floor(bytes / (width * 4)))
+}
 /** PNG 出力時の 1 パートの最大行数(出力キャンバス約 40MB) */
 export const PART_ROWS = 8000
 
@@ -25,10 +29,13 @@ export class TiledCanvasCompositor implements Compositor<FrameRegion> {
   private rows = 0
   /** 上限により捨てた行数 */
   truncatedRows = 0
+  readonly maxRows: number
   constructor(
     readonly width: number,
-    readonly maxRows = MAX_STITCH_ROWS,
-  ) {}
+    maxBytes = MAX_STITCH_BYTES,
+  ) {
+    this.maxRows = maxRowsForWidth(width, maxBytes)
+  }
 
   get height(): number {
     return this.rows
@@ -58,9 +65,12 @@ export class TiledCanvasCompositor implements Compositor<FrameRegion> {
 
   init(frame: FrameRegion, frameRows: number): void {
     this.tiles = []
-    this.rows = frameRows
+    // 初期フレームも同じ上限に従う(極端な解像度では先頭フレームすら切り詰める)
+    const rows = Math.min(frameRows, this.maxRows)
+    if (rows < frameRows) this.truncatedRows += frameRows - rows
+    this.rows = rows
     this.ensureRows(this.rows)
-    this.paint({ ...frame, sh: frameRows }, 0)
+    this.paint({ ...frame, sh: rows }, 0)
   }
 
   append(frame: FrameRegion, addRows: number, skip: number, frameRows: number): void {

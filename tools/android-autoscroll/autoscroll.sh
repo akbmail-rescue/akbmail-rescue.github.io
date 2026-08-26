@@ -30,8 +30,10 @@ collect() {
     local name; name=$(basename "$f"); local tmp="$OUT/$name.part"; local final="$OUT/$name"
     local rsize; rsize=$(A shell stat -c %s "$f" 2>/dev/null | tr -d '\r')
     [[ "$rsize" =~ ^[0-9]+$ ]] || continue
-    if A pull "$f" "$tmp" >/dev/null 2>&1 && [ -s "$tmp" ] && [ "$(stat -c %s "$tmp" 2>/dev/null || stat -f %z "$tmp")" = "$rsize" ]; then
-      mv -f "$tmp" "$final"; A shell rm -f "$f" >/dev/null 2>&1; echo "  取り込み完了 $name"
+    fsize() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null; }
+    if A pull "$f" "$tmp" >/dev/null 2>&1 && [ -s "$tmp" ] && [ "$(fsize "$tmp")" = "$rsize" ] \
+       && mv -f "$tmp" "$final" && [ -f "$final" ] && [ "$(fsize "$final")" = "$rsize" ]; then
+      A shell rm -f "$f" >/dev/null 2>&1; echo "  取り込み完了 $name"
     else
       rm -f "$tmp"; kept+=("$f"); echo "  取り込み失敗(端末上に残しました): $f"
     fi

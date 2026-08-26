@@ -28,10 +28,18 @@ export const OCR_UPSCALE = 2
 
 const TIMESTAMP_RE = /(20\d\d)-(\d\d)-(\d\d)\s*(\d\d):?(\d\d)/
 
-/** rescue.py と同じ正規表現で "YYYY-MM-DD_HHMM" を取り出す。見つからなければ null */
+/** 年月日時分が実在する日時か(2026-02-31 や 25:99 を弾く)。OCR と手入力の両方で使う(R2 #7) */
+export function isValidDateTime(y: number, M: number, D: number, H: number, I: number): boolean {
+  if (M < 1 || M > 12 || D < 1 || D > 31 || H < 0 || H > 23 || I < 0 || I > 59) return false
+  const dt = new Date(Date.UTC(y, M - 1, D))
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === M - 1 && dt.getUTCDate() === D
+}
+
+/** rescue.py と同じ正規表現で "YYYY-MM-DD_HHMM" を取り出す。見つからない・実在しない日時なら null */
 export function parseTimestamp(text: string): string | null {
   const m = TIMESTAMP_RE.exec(text)
   if (!m) return null
+  if (!isValidDateTime(Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5]))) return null
   return `${m[1]}-${m[2]}-${m[3]}_${m[4]}${m[5]}`
 }
 
@@ -50,10 +58,7 @@ export function normalizeTimestampInput(input: string): string | null {
   const D = Number(d)
   const H = Number(h)
   const I = Number(mi)
-  if (M < 1 || M > 12 || D < 1 || D > 31 || H > 23 || I > 59) return null
-  // 存在しない日付(2026-02-31 など)を弾く
-  const dt = new Date(Date.UTC(Number(y), M - 1, D))
-  if (dt.getUTCFullYear() !== Number(y) || dt.getUTCMonth() !== M - 1 || dt.getUTCDate() !== D) return null
+  if (!isValidDateTime(Number(y), M, D, H, I)) return null
   return `${y}-${String(M).padStart(2, '0')}-${String(D).padStart(2, '0')}_${String(H).padStart(2, '0')}${String(I).padStart(2, '0')}`
 }
 
