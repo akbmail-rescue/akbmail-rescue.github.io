@@ -70,7 +70,7 @@ def stitch(video, out_png, fixed_top=154, fps=6, scale=CORR_SCALE, recheck=True)
 
     cv2.imwrite(out_png, canvas)
     import json
-    json.dump({"fixed_top": fixed_top, "pairs": PAIRS, "height": int(canvas.shape[0]), "width": int(canvas.shape[1]), "frames": len(imgs)}, open(out_png + ".pairs.json", "w"))
+    json.dump({"fixed_top": fixed_top, "scale": scale, "recheck": recheck, "pairs": PAIRS, "height": int(canvas.shape[0]), "width": int(canvas.shape[1]), "frames": len(imgs)}, open(out_png + ".pairs.json", "w"))
     print(f"stitched: {canvas.shape[1]}x{canvas.shape[0]}px from {len(imgs)} frames")
     return canvas
 
@@ -95,6 +95,9 @@ if __name__ == "__main__":
     out = sys.argv[2] if len(sys.argv) > 2 else "synth/stitched.png"
     ft = int(sys.argv[3]) if len(sys.argv) > 3 else 154
     os.chdir(".")
-    c = stitch(video, out, ft)
+    # 使い方: stitch_ref.py <video> <out.png> [fixed_top=154] [scale=1] [recheck=0]
+    sc = int(sys.argv[4]) if len(sys.argv) > 4 else 1
+    rc = bool(int(sys.argv[5])) if len(sys.argv) > 5 else False
+    c = stitch(video, out, ft, scale=sc, recheck=rc)
     if os.path.exists("synth/ground_truth.png") and "synth" in video:
         validate(c, "synth/ground_truth.png", ft)

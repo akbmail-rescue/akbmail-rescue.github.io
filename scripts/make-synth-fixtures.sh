@@ -8,10 +8,15 @@ cd "$(dirname "$0")/.."
 ROOT=$(pwd)
 WORK=$(mktemp -d)
 "$PY" scripts/synth_gen_local.py "$WORK"
-( cd "$WORK" && "$PY" "$ROOT/scripts/stitch_ref.py" synth/scroll.mp4 synth/stitched_154.png 154 && "$PY" "$ROOT/scripts/stitch_ref.py" synth/scroll.mp4 synth/stitched_153.png 153 )
+# 原寸(scale=1, 再判定なし)= cv2 パリティ用、1/2 縮小(scale=2, 再判定なし)= 縮小パリティ用
+( cd "$WORK" \
+  && "$PY" "$ROOT/scripts/stitch_ref.py" synth/scroll.mp4 synth/stitched_154.png 154 1 0 \
+  && "$PY" "$ROOT/scripts/stitch_ref.py" synth/scroll.mp4 synth/stitched_153.png 153 1 0 \
+  && "$PY" "$ROOT/scripts/stitch_ref.py" synth/scroll.mp4 synth/stitched_153_s2.png 153 2 0 )
 rm -rf tests/fixtures/synth/frames && mkdir -p tests/fixtures/synth/frames
 cp "$WORK"/stitch_work/t_*.png tests/fixtures/synth/frames/
 cp "$WORK"/synth/ground_truth.png tests/fixtures/synth/
 cp "$WORK"/synth/stitched_154.png.pairs.json tests/fixtures/synth/pairs_154.json
 cp "$WORK"/synth/stitched_153.png.pairs.json tests/fixtures/synth/pairs_153.json
+cp "$WORK"/synth/stitched_153_s2.png.pairs.json tests/fixtures/synth/pairs_153_scale2.json
 echo "synth fixtures -> tests/fixtures/synth ($(ls tests/fixtures/synth/frames | wc -l) frames)"
