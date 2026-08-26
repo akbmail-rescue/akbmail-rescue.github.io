@@ -1,0 +1,15 @@
+node_modules
+dist
+tests/fixtures/frames/
+tests/fixtures/frames_scroll/
+tests/fixtures/*.h264.mp4
+*.log
+tests/fixtures/synth/frames/
+tests/fixtures/synth/ground_truth.png
+public/tesseract/
+public/tesseract-core/
+public/tessdata/
+tsconfig.*.tsbuildinfo
+# 参照動画・基準 zip は大きいので git に含めない(README 参照)
+reference/*.mp4
+reference/*.zip

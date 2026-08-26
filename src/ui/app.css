@@ -1,0 +1,245 @@
+:root {
+  --fg: #222;
+  --muted: #666;
+  --line: #ddd;
+  --bg: #fafafa;
+  --card: #fff;
+  --accent: #d1345b;
+  --warn: #a00;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, 'Segoe UI', 'Hiragino Sans', 'Noto Sans JP', sans-serif;
+  line-height: 1.5;
+}
+.app {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 16px;
+}
+.app-header h1 {
+  font-size: 22px;
+  margin: 0 0 4px;
+}
+.app-header .notice {
+  font-weight: 600;
+  margin: 0;
+}
+.app-header .sub {
+  color: var(--muted);
+  margin: 4px 0 12px;
+  font-size: 14px;
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+}
+.card h2 {
+  font-size: 16px;
+  margin: 0 0 8px;
+}
+.card h3 {
+  font-size: 14px;
+  margin: 12px 0 4px;
+}
+.guide {
+  font-size: 14px;
+}
+.guide ol,
+.guide ul {
+  padding-left: 22px;
+  margin: 4px 0;
+}
+button {
+  font: inherit;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: #f4f4f4;
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  padding: 10px 18px;
+  margin: 8px 0;
+}
+button.link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--fg);
+  font-weight: 600;
+  cursor: pointer;
+}
+.dropzone {
+  border: 2px dashed #bbb;
+  text-align: center;
+}
+.dropzone.over {
+  border-color: var(--accent);
+  background: #fff3f6;
+}
+.dropzone input[type='file'] {
+  margin: 8px 0;
+}
+.dropzone progress {
+  width: 100%;
+  height: 10px;
+}
+.status-row {
+  font-size: 14px;
+  margin: 8px 0;
+  text-align: left;
+}
+.hint {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 4px 0 8px;
+}
+.jobs {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.jobs li {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
+  flex-wrap: wrap;
+}
+.jobs li.current {
+  background: #fff8f9;
+}
+.jobs .name {
+  flex: 1;
+  min-width: 180px;
+  word-break: break-all;
+}
+.jobs .time {
+  color: var(--muted);
+  font-size: 12px;
+}
+.badge {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #eee;
+}
+.badge.done {
+  background: #e3f5e6;
+}
+.badge.error {
+  background: #fde2e2;
+}
+.badge.interrupted {
+  background: #fff1d6;
+}
+.badge.running {
+  background: #e2ecfd;
+}
+.grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.output {
+  margin: 0;
+  width: 170px;
+  font-size: 12px;
+}
+.output.excluded {
+  opacity: 0.4;
+}
+.output img {
+  width: 170px;
+  max-height: 300px;
+  object-fit: cover;
+  object-position: top;
+  border: 1px solid var(--line);
+  background: #fff;
+}
+.output .fname {
+  word-break: break-all;
+  color: #333;
+}
+.output .meta {
+  color: var(--muted);
+}
+.output input.ts {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 12px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 3px 4px;
+}
+.output input.ts.missing {
+  border-color: var(--warn);
+}
+.output input.ts.invalid {
+  background: #fde2e2;
+}
+.warn {
+  color: var(--warn);
+}
+.summary {
+  background: #eef;
+  padding: 8px;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+.log {
+  background: #111;
+  color: #ddd;
+  padding: 8px;
+  font-size: 11px;
+  height: 50vh;
+  overflow: auto;
+  margin: 8px 0 0;
+}
+.log.collapsed {
+  height: 0;
+  padding: 0;
+  margin: 0;
+  overflow: hidden;
+}
+.log .l-event {
+  color: #8f8;
+}
+.log .l-error {
+  color: #f88;
+}
+.log .l-info {
+  color: #8cf;
+}
+.app-footer {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 24px 0;
+}
+@media (max-width: 600px) {
+  .app {
+    padding: 10px;
+  }
+  .output {
+    width: 46%;
+  }
+  .output img {
+    width: 100%;
+  }
+}
