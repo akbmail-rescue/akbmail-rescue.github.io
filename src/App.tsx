@@ -58,6 +58,9 @@ export default function App() {
   const segMetaRef = useRef<Record<number, StoredSegMeta>>({})
   const busyRef = useRef(false)
   const cancelCurrentRef = useRef<((reason?: string) => void) | null>(null)
+  /** 復元中フラグと世代(復元中は投入・開始・削除を止め、完了時に世代を再確認する。R5 #2) */
+  const [restoring, setRestoring] = useState(false)
+  const restoreGenRef = useRef(0)
 
   const append = useCallback((text: string, kind: LogLine['kind'] = 'info') => {
     setLines((prev) => (prev.length > 5000 ? prev.slice(-4000) : prev).concat({ key: keyRef.current++, text, kind }))
@@ -141,10 +144,19 @@ export default function App() {
       // 異常状態の Worker を次の動画に使い回さない(R3 #3): 作り直す
       setWorkerGen((g) => g + 1)
     }
-    w.onerror = (ev) => fail(`WORKER ERROR: ${ev.message ?? 'unknown'} (${ev.filename ?? ''}:${ev.lineno ?? ''})`)
+    // 旧 Worker インスタンスからの遅延イベントは無視する(R5 #3)
+    const isCurrent = () => workerRef.current === w
+    w.onerror = (ev) => {
+      if (!isCurrent()) return
+      fail(`WORKER ERROR: ${ev.message ?? 'unknown'} (${ev.filename ?? ''}:${ev.lineno ?? ''})`)
+    }
     // デシリアライズ失敗も致命エラー扱い(R4 #3): ジョブを error にして Worker を作り直す
-    w.onmessageerror = () => fail('WORKER MESSAGE ERROR: 応答を受け取れませんでした')
+    w.onmessageerror = () => {
+      if (!isCurrent()) return
+      fail('WORKER MESSAGE ERROR: 応答を受け取れませんでした')
+    }
     w.onmessage = (e: MessageEvent<WorkerResponse>) => {
+      if (!isCurrent()) return
       const m = e.data
       // 世代判定(R4 #2): 現在のジョブ宛てでない応答(旧 Worker の遅延イベント)は捨てる
       if (!acceptsMessage(m.jobId, jobRef.current?.id ?? null)) {
@@ -214,7 +226,10 @@ export default function App() {
           break
       }
     }
-    return () => w.terminate()
+    return () => {
+      if (workerRef.current === w) workerRef.current = null
+      w.terminate()
+    }
   }, [append, notePersistFailure, persistJob, refreshJobs, updateSegMeta, workerGen])
 
   /** 処理を中止: Worker を破棄して作り直し、ジョブは interrupted(処理済み分は残る) */
@@ -246,6 +261,7 @@ export default function App() {
     async (file: File) => {
       if (!workerRef.current) return
       busyRef.current = true
+      restoreGenRef.current++ // 進行中の復元を無効化(R5 #2)
       resetView()
       setStatus('読み込み中')
       setStartedAt(Date.now())
@@ -278,16 +294,17 @@ export default function App() {
     [append, notePersistFailure, refreshJobs, resetView],
   )
 
-  // キュー: 1 本ずつ順に処理(status が変わるたびに次を確認)
+  // キュー: 1 本ずつ順に処理(status が変わるたびに次を確認)。復元中は開始しない
   useEffect(() => {
-    if (busyRef.current || queue.length === 0) return
+    if (busyRef.current || restoring || queue.length === 0) return
     const [next, ...rest] = queue
     setQueue(rest)
     void startFile(next)
-  }, [queue, status, startFile])
+  }, [queue, status, restoring, startFile])
 
   const enqueueFiles = (files: FileList | File[] | null | undefined) => {
-    if (!files) return
+    if (!files || restoring) return
+    restoreGenRef.current++ // 進行中の復元があれば無効化
     const list = Array.from(files).filter((f) => /\.(mp4|mov|m4v)$/i.test(f.name) || f.type.startsWith('video/'))
     if (list.length === 0) return
     setQueue((q) => [...q, ...list])
@@ -296,22 +313,36 @@ export default function App() {
 
   /** 保存済みジョブの結果を IndexedDB から復元して表示 */
   const restoreJob = async (job: JobRecord) => {
-    if (!store || busyRef.current) return
-    resetView()
-    jobRef.current = job
-    setCurrentJob(job)
-    segMetaRef.current = job.segMeta ?? {}
-    setSegMeta(job.segMeta ?? {})
-    setSummary(job.summaryText ?? '')
-    setStatus(job.status === 'done' ? '完了' : `${STATUS_LABEL[job.status]}(処理済み分を復元)`)
-    const outs = await store.listOutputs(job.id)
-    seqRef.current = outs.length
-    setOutputs(outs.map((o) => ({ ...o.item, key: o.key, seq: o.seq, url: URL.createObjectURL(o.item.blob), included: o.included, editedTimestamp: o.editedTimestamp })))
-    append(`restored ${outs.length} outputs for ${job.fileName} (status=${job.status})`)
+    if (!store || busyRef.current || restoring) return
+    const gen = ++restoreGenRef.current
+    setRestoring(true)
+    try {
+      resetView()
+      jobRef.current = job
+      setCurrentJob(job)
+      segMetaRef.current = job.segMeta ?? {}
+      setSegMeta(job.segMeta ?? {})
+      setSummary(job.summaryText ?? '')
+      setStatus(job.status === 'done' ? '完了' : `${STATUS_LABEL[job.status]}(処理済み分を復元)`)
+      const outs = await store.listOutputs(job.id)
+      // 読み込み中に別の操作(削除・別ジョブ開始)が起きていたら結果を捨てる(R5 #2)
+      if (gen !== restoreGenRef.current || jobRef.current?.id !== job.id) {
+        append(`restore of ${job.fileName} discarded (superseded)`)
+        return
+      }
+      seqRef.current = outs.length
+      setOutputs(outs.map((o) => ({ ...o.item, key: o.key, seq: o.seq, url: URL.createObjectURL(o.item.blob), included: o.included, editedTimestamp: o.editedTimestamp })))
+      append(`restored ${outs.length} outputs for ${job.fileName} (status=${job.status})`)
+    } catch (e) {
+      append(`復元に失敗: ${e instanceof Error ? e.message : String(e)}`, 'error')
+    } finally {
+      if (gen === restoreGenRef.current) setRestoring(false)
+    }
   }
 
   const deleteJob = async (job: JobRecord) => {
-    if (!store) return
+    if (!store || restoring) return
+    restoreGenRef.current++ // 進行中の復元があれば無効化
     if (!window.confirm(`「${job.fileName}」の処理結果を端末から削除します。よろしいですか?`)) return
     await store.deleteJob(job.id)
     if (jobRef.current?.id === job.id) {
@@ -402,7 +433,7 @@ export default function App() {
         }}
       >
         <p>動画ファイル(MP4 / MOV)をここにドラッグ&ドロップ、または選択してください(複数可・順番に処理します)</p>
-        <input id="file" type="file" multiple accept="video/mp4,video/quicktime,.mp4,.mov,.m4v" onChange={(e) => enqueueFiles(e.target.files)} />
+        <input id="file" type="file" multiple accept="video/mp4,video/quicktime,.mp4,.mov,.m4v" disabled={restoring} onChange={(e) => enqueueFiles(e.target.files)} />
         <div className="status-row">
           状態: <strong id="status">{status}</strong>
           {currentJob && <span> / {currentJob.fileName}</span>}
@@ -435,10 +466,10 @@ export default function App() {
                 <span className={`badge ${j.status}`}>{STATUS_LABEL[j.status]}</span>
                 {j.persistFailures ? <span className="warn">保存失敗 {j.persistFailures} 件</span> : null}
                 <span className="time">{new Date(j.updatedAt).toLocaleString()}</span>
-                <button disabled={running} onClick={() => restoreJob(j)}>
+                <button disabled={running || restoring} onClick={() => restoreJob(j)}>
                   結果を開く
                 </button>
-                <button disabled={running} onClick={() => deleteJob(j)}>
+                <button disabled={running || restoring} onClick={() => deleteJob(j)}>
                   削除
                 </button>
               </li>

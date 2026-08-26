@@ -5,7 +5,9 @@
  *   候補はグレー 8bit の切り出し(1 候補 ≈ 0.5MB)なので、上限 64 で約 32MB
  * - 区間ごとの待ち候補は maxWaitingPerSeg(既定 = 試行上限 8)まで保持する。区間が閉じた後は補充されないため、
  *   失敗区間の 8 回試行を保証するには区間が開いている間に 8 候補を貯めておく必要がある(R4 #1)。
- *   全体上限に達したときは「待ちが最も多い区間の末尾」を退避して公平性を保つ(長尺では先行の失敗区間の試行数が減る)。
+ *   全体上限に達したときは「待ちが最も多い他区間」から 1 件退避して公平性を保つ。退避するのは末尾ではなく
+ *   **中間**の候補(先頭と最新は必ず残す)。退避される区間の待ちは minWaitingPerSeg(3)を下回らないので、
+ *   飽和時でも各区間は「実行中 1 + 待ち 3」= 最低 4 回、通常は 8 回試行できる(R5 #1、要件 F-5 に明記)。
  *   失敗直後の連続フレームはほぼ同じ絵なので、前回候補から minSpacing フレーム以上離れたものだけ受け付ける
  * - canAccept() で「切り出す前に」受け入れ可否を判定できる(拒否されるフレームに切り出しコストを払わない、R4 #4)
  * - 認識の例外(タイムアウト等)は連続 maxConsecutiveErrors 回までは候補失敗として続行し、超えたら停止(R3 #2)
@@ -63,6 +65,8 @@ export class OcrQueue<T> {
     readonly maxWaitingPerSeg = 8,
     readonly minSpacing = 3,
     readonly maxConsecutiveErrors = 3,
+    /** 飽和時でも各区間に残す待ち候補の最低数 */
+    readonly minWaitingPerSeg = 3,
   ) {}
 
   get isFailed(): boolean {
@@ -96,8 +100,13 @@ export class OcrQueue<T> {
       if (st.queue.length >= this.maxWaitingPerSeg) return false
     }
     if (this.queuedTotal < this.maxQueuedTotal) return true
-    // 退避できる区間(待ち 2 以上)があれば受け入れ可。自区間しか無ければ不可
-    for (const [id, other] of this.segs) if (id !== seg && other.queue.length > 1) return true
+    // 退避できる他区間: 待ちが最低保持数を超える区間。自区間がまだ最低保持数に満たない場合だけ、他区間を 1 まで削ってよい
+    const mine = st?.queue.length ?? 0
+    for (const [id, other] of this.segs) {
+      if (id === seg) continue
+      if (other.queue.length > this.minWaitingPerSeg) return true
+      if (mine < this.minWaitingPerSeg && other.queue.length > 1) return true
+    }
     return false
   }
 
@@ -113,10 +122,13 @@ export class OcrQueue<T> {
     }
     const st = this.seg(seg)
     if (this.queuedTotal >= this.maxQueuedTotal) {
-      // 全体上限: 待ち候補を最も多く抱える他区間の末尾を退避して席を空ける(canAccept で存在は保証済み)
+      // 全体上限: 待ち候補を最も多く抱える他区間から 1 件退避(canAccept で存在は保証済み)。
+      // 先頭(区間の最初の絵)と末尾(最新)は残し、中間を捨てて時系列を均等に保つ
       let victim: SegState<T> | null = null
-      for (const [id, other] of this.segs) if (id !== seg && other.queue.length > 1 && (!victim || other.queue.length > victim.queue.length)) victim = other
-      const evicted = victim!.queue.pop()!
+      for (const [id, other] of this.segs) if (id !== seg && other.queue.length > this.minWaitingPerSeg && (!victim || other.queue.length > victim.queue.length)) victim = other
+      if (!victim && st.queue.length < this.minWaitingPerSeg) for (const [id, other] of this.segs) if (id !== seg && other.queue.length > 1 && (!victim || other.queue.length > victim.queue.length)) victim = other
+      const q = victim!.queue
+      const evicted = q.splice(Math.floor(q.length / 2), 1)[0]
       this.release(evicted.image)
       this.queuedTotal--
       victim!.dropped++
@@ -201,6 +213,11 @@ export class OcrQueue<T> {
   /** 全区間の実行と待ち行列が空になるまで待つ(後から積まれたジョブも含む) */
   async drain(): Promise<void> {
     while (!this.idle) await new Promise<void>((r) => this.waiters.push(r))
+  }
+
+  /** テスト用: 区間の待ち候補のフレーム番号 */
+  waitingIndices(seg: number): number[] {
+    return (this.segs.get(seg)?.queue ?? []).map((c) => c.index)
   }
 
   /** 区間ごとの統計(ログ用) */

@@ -25,10 +25,20 @@ export interface FfmpegExtractOptions {
 /** 1 チャンク(chunkSec 秒)の ffmpeg 実行上限。遅い端末でも 3 秒分の HEVC 復号に 5 分はかからない想定。超過は例外(ハング対策、R2 #5) */
 export const EXEC_TIMEOUT_MS = 5 * 60 * 1000
 
-const MOUNT = '/input'
-const OUT = '/out'
-
 let cached: Promise<FFmpeg> | null = null
+let callSeq = 0
+
+/** 異常終了後は汚染された可能性があるインスタンスを捨てる(R5 #4) */
+async function discardCached() {
+  const c = cached
+  cached = null
+  try {
+    const ff = await c
+    ff?.terminate()
+  } catch {
+    /* ignore */
+  }
+}
 
 async function loadFfmpeg(log?: (m: string) => void): Promise<FFmpeg> {
   if (!cached) {
@@ -59,14 +69,17 @@ export async function extractWithFfmpeg(file: File, opt: FfmpegExtractOptions): 
   if (Math.abs(chunkSec * fps - Math.round(chunkSec * fps)) > 1e-9) throw new Error('chunkSec must be a multiple of 1/fps')
   const ff = await loadFfmpeg(opt.log)
 
-  // ファイル名に依存しない固定名でマウントする(WORKERFS は File.name をそのまま使う)
+  // 呼び出しごとに一意なディレクトリを使い、同一 Worker で複数本処理しても残留状態と衝突しない(R5 #4)
+  const id = ++callSeq
+  const MOUNT = `/input_${id}`
+  const OUT = `/out_${id}`
   const input = new File([file], 'input.mp4', { type: file.type })
-  await ff.createDir(MOUNT)
-  await ff.mount('WORKERFS' as Parameters<FFmpeg['mount']>[0], { files: [input] }, MOUNT)
-  await ff.createDir(OUT)
-
+  let ok = false
   let sampled = 0
   try {
+    await ff.createDir(MOUNT)
+    await ff.mount('WORKERFS' as Parameters<FFmpeg['mount']>[0], { files: [input] }, MOUNT)
+    await ff.createDir(OUT)
     for (let start = 0; start < opt.durationSec; start += chunkSec) {
       const len = Math.min(chunkSec, opt.durationSec - start)
       const baseSlot = Math.round(start * fps)
@@ -106,12 +119,20 @@ export async function extractWithFfmpeg(file: File, opt: FfmpegExtractOptions): 
       }
       opt.onProgress?.(Math.min(start + len, opt.durationSec), opt.durationSec)
     }
+    ok = true
   } finally {
+    // 出力の残骸・マウント・ディレクトリを確実に除去。失敗時はインスタンスごと破棄する
     try {
-      await ff.unmount(MOUNT)
+      for (const n of await ff.listDir(OUT).catch(() => [] as Array<{ name: string; isDir: boolean }>)) {
+        if (!n.isDir) await ff.deleteFile(`${OUT}/${n.name}`).catch(() => {})
+      }
+      await ff.deleteDir(OUT).catch(() => {})
+      await ff.unmount(MOUNT).catch(() => {})
+      await ff.deleteDir(MOUNT).catch(() => {})
     } catch {
       /* ignore */
     }
+    if (!ok) await discardCached()
   }
   return { sampled }
 }

@@ -43,10 +43,12 @@ export class TiledCanvasCompositor implements Compositor<FrameRegion> {
 
   private ensureRows(rows: number) {
     while (this.tiles.length * TILE_ROWS < rows) {
-      const c = new OffscreenCanvas(this.width, TILE_ROWS)
+      // 最終タイルは上限までの残り行数で確保し、上限を超えて割り当てない
+      const h = Math.min(TILE_ROWS, this.maxRows - this.tiles.length * TILE_ROWS)
+      const c = new OffscreenCanvas(this.width, Math.max(1, h))
       const ctx = c.getContext('2d')!
       ctx.fillStyle = '#fff'
-      ctx.fillRect(0, 0, this.width, TILE_ROWS)
+      ctx.fillRect(0, 0, this.width, c.height)
       this.tiles.push(c)
     }
   }
@@ -57,7 +59,7 @@ export class TiledCanvasCompositor implements Compositor<FrameRegion> {
     for (let t = Math.floor(dstRow / TILE_ROWS); t * TILE_ROWS < end; t++) {
       const tileTop = t * TILE_ROWS
       const y0 = Math.max(dstRow, tileTop)
-      const y1 = Math.min(end, tileTop + TILE_ROWS)
+      const y1 = Math.min(end, tileTop + this.tiles[t].height)
       const ctx = this.tiles[t].getContext('2d')!
       ctx.drawImage(frame.source, frame.sx, frame.sy + (y0 - dstRow), frame.sw, y1 - y0, 0, y0 - tileTop, frame.sw, y1 - y0)
     }
@@ -96,7 +98,7 @@ export class TiledCanvasCompositor implements Compositor<FrameRegion> {
       for (let t = Math.floor(start / TILE_ROWS); t * TILE_ROWS < start + h; t++) {
         const tileTop = t * TILE_ROWS
         const y0 = Math.max(start, tileTop)
-        const y1 = Math.min(start + h, tileTop + TILE_ROWS, this.rows)
+        const y1 = Math.min(start + h, tileTop + this.tiles[t].height, this.rows)
         ctx.drawImage(this.tiles[t], 0, y0 - tileTop, this.width, y1 - y0, 0, y0 - start, this.width, y1 - y0)
       }
       blobs.push(await out.convertToBlob({ type: 'image/png' }))

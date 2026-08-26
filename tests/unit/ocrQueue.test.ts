@@ -31,6 +31,7 @@ describe('OcrQueue', () => {
     // 上限到達後: 新しい区間 2 の候補は、待ちが多い区間(0 と 1 が 2 ずつ → 先に見つかった方)の末尾を退避して受け入れる
     expect(q.offer(2, { index: 0, image: 'h' })).toBe(true)
     expect(q.queued).toBe(4)
+    expect(q.waitingIndices(0)).toEqual([1]) // 中間(2 件なら後ろ側)を退避
     // 他区間に退避できる候補(待ち 2 以上)が無ければ捨てる(自区間の候補を退避してまでは入れない)
     expect(q.offer(1, { index: 2, image: 'g' })).toBe(false)
     expect(q.droppedTotal).toBe(3) // d(試行上限)+ c(退避)+ g(全体上限)
@@ -113,6 +114,25 @@ describe('OcrQueue', () => {
     expect(st.every((x) => x.attempts >= 1)).toBe(true)
     expect(st.filter((x) => x.found).length).toBe(20)
     expect(q.queued).toBe(0)
+  })
+  it('OCR 停止のまま 20 区間 × 8 候補を投入: 全体 64 以内で各区間に待ち 3(先頭・最新を含む)が残り、中間が退避される(R5 #1)', () => {
+    const q = new OcrQueue<string>(() => new Promise(() => {}), () => {}, () => {}, () => {}, 8, 64, 8, 1, 3, 3)
+    for (let seg = 0; seg < 20; seg++) for (let f = 0; f < 8; f++) q.offer(seg, { index: f * 10, image: `${seg}-${f}` })
+    expect(q.queued).toBeLessThanOrEqual(64)
+    // 区間 0 は実行中 1(index 0)+待ち。退避後も先頭(10)と最新(70)を保持する
+    const w0 = q.waitingIndices(0)
+    expect(w0.length).toBeGreaterThanOrEqual(3)
+    expect(w0[0]).toBe(10)
+    expect(w0[w0.length - 1]).toBe(70)
+    // 20 区間すべてが候補を持つ(全体飽和でも新しい区間に機会がある)
+    for (let seg = 1; seg < 20; seg++) expect(q.waitingIndices(seg).length).toBeGreaterThanOrEqual(1)
+    expect(q.waitingIndices(19)[0]).toBe(0) // 新しい区間も先頭候補から確保される
+  })
+  it('極端な飽和(60 区間)でも、各区間に最低 1 候補は残り新しい区間が拒否されない', () => {
+    const q = new OcrQueue<string>(() => new Promise(() => {}), () => {}, () => {}, () => {}, 8, 64, 8, 1, 3, 3)
+    for (let seg = 0; seg < 60; seg++) for (let f = 0; f < 8; f++) q.offer(seg, { index: f * 10, image: `${seg}-${f}` })
+    expect(q.queued).toBeLessThanOrEqual(64)
+    for (let seg = 1; seg < 60; seg++) expect(q.waitingIndices(seg).length).toBeGreaterThanOrEqual(1)
   })
   it('直前の候補から minSpacing 未満のフレームは受け付けない', () => {
     const q = new OcrQueue<string>(async () => ok(null), () => {}, () => {}, () => {}, 8, 64, 3, 3)
