@@ -121,18 +121,23 @@ export async function extractWithFfmpeg(file: File, opt: FfmpegExtractOptions): 
     }
     ok = true
   } finally {
-    // 出力の残骸・マウント・ディレクトリを確実に除去。失敗時はインスタンスごと破棄する
-    try {
-      for (const n of await ff.listDir(OUT).catch(() => [] as Array<{ name: string; isDir: boolean }>)) {
-        if (!n.isDir) await ff.deleteFile(`${OUT}/${n.name}`).catch(() => {})
+    // 出力の残骸・マウント・ディレクトリを確実に除去。処理失敗でも後始末失敗でもインスタンスごと破棄する(R6 #2)
+    const cleanupErrors: string[] = []
+    const step = async (label: string, fn: () => Promise<unknown>) => {
+      try {
+        await fn()
+      } catch (e) {
+        cleanupErrors.push(`${label}: ${e instanceof Error ? e.message : String(e)}`)
       }
-      await ff.deleteDir(OUT).catch(() => {})
-      await ff.unmount(MOUNT).catch(() => {})
-      await ff.deleteDir(MOUNT).catch(() => {})
-    } catch {
-      /* ignore */
     }
-    if (!ok) await discardCached()
+    await step('listDir/deleteFile', async () => {
+      for (const n of await ff.listDir(OUT)) if (!n.isDir) await ff.deleteFile(`${OUT}/${n.name}`)
+    })
+    await step('deleteDir(out)', () => ff.deleteDir(OUT))
+    await step('unmount', () => ff.unmount(MOUNT))
+    await step('deleteDir(mount)', () => ff.deleteDir(MOUNT))
+    if (cleanupErrors.length) opt.log?.(`ffmpeg cleanup failed (instance discarded): ${cleanupErrors.join('; ')}`)
+    if (!ok || cleanupErrors.length) await discardCached()
   }
   return { sampled }
 }

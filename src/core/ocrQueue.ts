@@ -100,14 +100,7 @@ export class OcrQueue<T> {
       if (st.queue.length >= this.maxWaitingPerSeg) return false
     }
     if (this.queuedTotal < this.maxQueuedTotal) return true
-    // 退避できる他区間: 待ちが最低保持数を超える区間。自区間がまだ最低保持数に満たない場合だけ、他区間を 1 まで削ってよい
-    const mine = st?.queue.length ?? 0
-    for (const [id, other] of this.segs) {
-      if (id === seg) continue
-      if (other.queue.length > this.minWaitingPerSeg) return true
-      if (mine < this.minWaitingPerSeg && other.queue.length > 1) return true
-    }
-    return false
+    return this.findVictim(seg, st?.queue.length ?? 0) !== null
   }
 
   /** 候補を投入する。受け入れられなければ false を返す(呼び出し側で解放する) */
@@ -122,13 +115,11 @@ export class OcrQueue<T> {
     }
     const st = this.seg(seg)
     if (this.queuedTotal >= this.maxQueuedTotal) {
-      // 全体上限: 待ち候補を最も多く抱える他区間から 1 件退避(canAccept で存在は保証済み)。
-      // 先頭(区間の最初の絵)と末尾(最新)は残し、中間を捨てて時系列を均等に保つ
-      let victim: SegState<T> | null = null
-      for (const [id, other] of this.segs) if (id !== seg && other.queue.length > this.minWaitingPerSeg && (!victim || other.queue.length > victim.queue.length)) victim = other
-      if (!victim && st.queue.length < this.minWaitingPerSeg) for (const [id, other] of this.segs) if (id !== seg && other.queue.length > 1 && (!victim || other.queue.length > victim.queue.length)) victim = other
-      const q = victim!.queue
-      const evicted = q.splice(Math.floor(q.length / 2), 1)[0]
+      // 全体上限: 退避元(canAccept で存在は保証済み)から 1 件退避。
+      // 先頭(区間の最初の絵)と末尾(最新)は残し、中間を捨てて時系列を均等に保つ(待ち 1 件なら唯一の候補)
+      const victim = this.findVictim(seg, st.queue.length)!
+      const q = victim.queue
+      const evicted = q.splice(q.length === 1 ? 0 : Math.floor(q.length / 2), 1)[0]
       this.release(evicted.image)
       this.queuedTotal--
       victim!.dropped++
@@ -213,6 +204,26 @@ export class OcrQueue<T> {
   /** 全区間の実行と待ち行列が空になるまで待つ(後から積まれたジョブも含む) */
   async drain(): Promise<void> {
     while (!this.idle) await new Promise<void>((r) => this.waiters.push(r))
+  }
+
+  /**
+   * 全体上限時の退避元を選ぶ(副作用なし)。mine = 自区間の現在の待ち数。
+   * (a) 待ち > minWaiting の他区間(最多) → (b) mine < minWaiting なら待ち ≥2 の他区間(最多)
+   * → (c) mine === 0(新区間の最初の候補)なら、最も古い他区間で待ち ≥1 のもの
+   */
+  private findVictim(seg: number, mine: number): SegState<T> | null {
+    let victim: SegState<T> | null = null
+    for (const [id, other] of this.segs) if (id !== seg && other.queue.length > this.minWaitingPerSeg && (!victim || other.queue.length > victim.queue.length)) victim = other
+    if (!victim && mine < this.minWaitingPerSeg) for (const [id, other] of this.segs) if (id !== seg && other.queue.length > 1 && (!victim || other.queue.length > victim.queue.length)) victim = other
+    if (!victim && mine === 0) {
+      for (const [id, other] of this.segs) {
+        if (id !== seg && other.queue.length >= 1) {
+          victim = other
+          break // Map は挿入順 = 古い区間から
+        }
+      }
+    }
+    return victim
   }
 
   /** テスト用: 区間の待ち候補のフレーム番号 */

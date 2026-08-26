@@ -134,6 +134,26 @@ describe('OcrQueue', () => {
     expect(q.queued).toBeLessThanOrEqual(64)
     for (let seg = 1; seg < 60; seg++) expect(q.waitingIndices(seg).length).toBeGreaterThanOrEqual(1)
   })
+  it('条件付き保証(R6 #1): ≤21 区間は待ち ≥3、≤64 区間は待ち ≥1、それ以上は新区間の最初の候補を受け入れ古い区間を捨てる。全区間が試行を完走する', async () => {
+    for (const segs of [21, 64, 65, 100]) {
+      let release: () => void = () => {}
+      const gate = new Promise<void>((r) => (release = r))
+      const attempts = new Map<number, number>()
+      const q = new OcrQueue<string>(async () => { await gate; return ok(null) }, (ev) => attempts.set(ev.seg, ev.attempt), () => {}, () => {}, 8, 64, 8, 1, 3, 3)
+      for (let seg = 0; seg < segs; seg++) for (let f = 0; f < 8; f++) q.offer(seg, { index: f * 10, image: `${seg}-${f}` })
+      expect(q.queued).toBeLessThanOrEqual(64)
+      const minWaiting = Math.min(...Array.from({ length: segs }, (_, sg) => (sg === 0 ? Infinity : q.waitingIndices(sg).length)))
+      if (segs <= 21) expect(minWaiting).toBeGreaterThanOrEqual(3)
+      else if (segs <= 64) expect(minWaiting).toBeGreaterThanOrEqual(1)
+      // 新しい区間の最初の候補は必ず受け入れられている(古い区間の待ちを捨てる)
+      expect(q.waitingIndices(segs - 1).length).toBeGreaterThanOrEqual(1)
+      release()
+      await q.drain()
+      // 実行中だった区間 0 と、待ちを持っていた区間はすべて完走し attempts が付く
+      for (let seg = 0; seg < segs; seg++) if (seg === 0 || segs <= 64) expect(attempts.get(seg) ?? 0).toBeGreaterThanOrEqual(1)
+      expect(q.idle).toBe(true)
+    }
+  })
   it('直前の候補から minSpacing 未満のフレームは受け付けない', () => {
     const q = new OcrQueue<string>(async () => ok(null), () => {}, () => {}, () => {}, 8, 64, 3, 3)
     expect(q.offer(0, { index: 10, image: 'a' })).toBe(true)

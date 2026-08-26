@@ -312,29 +312,33 @@ export default function App() {
   }
 
   /** 保存済みジョブの結果を IndexedDB から復元して表示 */
+  /** 保存済みジョブの結果を IndexedDB から復元して表示。読み込みが成功してから画面を一括更新する(R6 #4) */
   const restoreJob = async (job: JobRecord) => {
     if (!store || busyRef.current || restoring) return
     const gen = ++restoreGenRef.current
     setRestoring(true)
+    setStatus(`復元中: ${job.fileName}`)
     try {
+      const outs = await store.listOutputs(job.id)
+      // 読み込み中に別の操作(削除・別ジョブ開始)が起きていたら結果を捨てる(R5 #2)
+      if (gen !== restoreGenRef.current) {
+        append(`restore of ${job.fileName} discarded (superseded)`)
+        return
+      }
       resetView()
       jobRef.current = job
       setCurrentJob(job)
       segMetaRef.current = job.segMeta ?? {}
       setSegMeta(job.segMeta ?? {})
       setSummary(job.summaryText ?? '')
-      setStatus(job.status === 'done' ? '完了' : `${STATUS_LABEL[job.status]}(処理済み分を復元)`)
-      const outs = await store.listOutputs(job.id)
-      // 読み込み中に別の操作(削除・別ジョブ開始)が起きていたら結果を捨てる(R5 #2)
-      if (gen !== restoreGenRef.current || jobRef.current?.id !== job.id) {
-        append(`restore of ${job.fileName} discarded (superseded)`)
-        return
-      }
       seqRef.current = outs.length
       setOutputs(outs.map((o) => ({ ...o.item, key: o.key, seq: o.seq, url: URL.createObjectURL(o.item.blob), included: o.included, editedTimestamp: o.editedTimestamp })))
+      setStatus(job.status === 'done' ? '完了' : `${STATUS_LABEL[job.status]}(処理済み分を復元)`)
       append(`restored ${outs.length} outputs for ${job.fileName} (status=${job.status})`)
     } catch (e) {
+      // 直前の表示は保ったまま、復元エラーだけを明示する
       append(`復元に失敗: ${e instanceof Error ? e.message : String(e)}`, 'error')
+      if (gen === restoreGenRef.current) setStatus(`復元エラー: ${job.fileName}(ブラウザの保存領域を読めませんでした)`)
     } finally {
       if (gen === restoreGenRef.current) setRestoring(false)
     }
