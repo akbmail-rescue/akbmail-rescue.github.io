@@ -70,5 +70,5 @@ try {
   }
   Write-Host "保存先: $OutDir"
   Get-ChildItem $OutDir -Filter "akbmail_${stamp}_*.mp4" | ForEach-Object { Write-Host ("  {0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB)) }
-  Write-Host "この動画を https://masaki6698.github.io/akbmail-rescue/ に投入してください(複数まとめて可)"
+  Write-Host "この動画を https://akbmail-rescue.github.io/ に投入してください(複数まとめて可)"
 }

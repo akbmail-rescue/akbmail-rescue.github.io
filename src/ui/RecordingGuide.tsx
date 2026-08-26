@@ -38,7 +38,7 @@ export function RecordingGuide() {
       <h3>Android の場合</h3>
       <p>
         Android 標準の画面収録で同じ手順です。パソコンと USB でつなげる場合は、録画とスクロールを自動でくり返すスクリプトを用意しています:{' '}
-        <a href="https://github.com/masaki6698/akbmail-rescue/tree/main/tools/android-autoscroll" target="_blank" rel="noreferrer">
+        <a href="https://github.com/akbmail-rescue/akbmail-rescue.github.io/tree/main/tools/android-autoscroll" target="_blank" rel="noreferrer">
           Android 自動スクロール録画の手順
         </a>
       </p>

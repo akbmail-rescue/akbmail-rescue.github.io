@@ -10,7 +10,7 @@ X=$((W/2)); Y1=$(python3 -c "print(int($H*(0.5+$RATIO/2)))"); Y2=$(python3 -c "p
 MS=$(python3 -c "print(int($DRAG*1000))")
 echo "画面 ${W}x${H}: ($X,$Y1)→($X,$Y2) を ${DRAG}s でドラッグ、${WAIT}s 待機(合計 ${MINUTES} 分)。5 秒後に開始(中止は Ctrl+C)"; sleep 5
 mkdir -p "$OUT"; STAMP=$(date +%Y%m%d-%H%M%S); END=$(( $(date +%s) + MINUTES*60 )); PART=0; FILES=()
-cleanup() { echo "録画を止めて動画を取り込みます…"; $ADB shell pkill -l2 screenrecord >/dev/null 2>&1; sleep 3; for f in "${FILES[@]}"; do $ADB pull "$f" "$OUT" >/dev/null 2>&1; $ADB shell rm -f "$f" >/dev/null 2>&1; done; ls -la "$OUT" | grep "akbmail_${STAMP}"; echo "この動画を https://masaki6698.github.io/akbmail-rescue/ に投入してください"; }
+cleanup() { echo "録画を止めて動画を取り込みます…"; $ADB shell pkill -l2 screenrecord >/dev/null 2>&1; sleep 3; for f in "${FILES[@]}"; do $ADB pull "$f" "$OUT" >/dev/null 2>&1; $ADB shell rm -f "$f" >/dev/null 2>&1; done; ls -la "$OUT" | grep "akbmail_${STAMP}"; echo "この動画を https://akbmail-rescue.github.io/ に投入してください"; }
 trap cleanup EXIT INT TERM
 while [ "$(date +%s)" -lt "$END" ]; do
   PART=$((PART+1)); REMOTE=$(printf '/sdcard/akbmail_%s_%03d.mp4' "$STAMP" "$PART"); FILES+=("$REMOTE")
